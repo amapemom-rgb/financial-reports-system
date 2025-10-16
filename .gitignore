@@ -1,0 +1,10 @@
+
+# Project specific
+deployment_info.json
+deploy.log
+.env
+.env.local
+terraform.tfstate*
+.terraform/
+postgres_data/
+storage_data/

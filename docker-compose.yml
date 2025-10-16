@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: financial-reports-db
+    environment:
+      POSTGRES_DB: financial_reports
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    container_name: financial-reports-pubsub
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+    ports:
+      - "8085:8085"
+    environment:
+      PUBSUB_PROJECT_ID: local-project
+
+  storage-emulator:
+    image: fsouza/fake-gcs-server
+    container_name: financial-reports-storage
+    ports:
+      - "4443:4443"
+    command: -scheme http -port 4443 -external-url http://localhost:4443
+    volumes:
+      - storage_data:/data
+
+volumes:
+  postgres_data:
+  storage_data:
+
+networks:
+  default:
+    name: financial-reports-network

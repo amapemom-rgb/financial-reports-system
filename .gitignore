@@ -8,3 +8,28 @@ terraform.tfstate*
 .terraform/
 postgres_data/
 storage_data/
+
+# Python virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+*.xlsx
+*.csv
+data/
+
+# Logs
+*.log
+logs/
+

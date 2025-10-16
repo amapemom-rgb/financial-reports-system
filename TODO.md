@@ -3,33 +3,37 @@
 ## 🔥 Критично (Сделать Первым)
 
 ### Агенты
-- [ ] **Frontend Service** - Дописать полный код
-  - [ ] Все API endpoints
-  - [ ] Speech-to-Text/Text-to-Speech интеграция
-  - [ ] Обработка ошибок
-  - [ ] Логирование
+- [x] **Frontend Service** - Дописать полный код ✅
+  - [x] Все API endpoints
+  - [x] Speech-to-Text/Text-to-Speech интеграция ✅
+  - [x] Обработка ошибок
+  - [x] Логирование
 
-- [ ] **Orchestrator Agent** - Полная реализация
+- [ ] **Orchestrator Agent** - Полная реализация (20% → 100%)
   - [ ] State Machine
   - [ ] SQLAlchemy модели
   - [ ] Pub/Sub integration
   - [ ] Маршрутизация задач
 
-- [ ] **Report Reader Agent** - Создать с нуля
-  - [ ] Excel reader
-  - [ ] Google Sheets reader
-  - [ ] Data cleaning
-  - [ ] Validation
+- [x] **Report Reader Agent** - Создать с нуля ✅
+  - [x] Excel reader ✅
+  - [x] Google Sheets reader ✅
+  - [x] Data cleaning ✅
+  - [x] Validation ✅
 
-- [ ] **Logic Understanding Agent** - Доработать
-  - [ ] Gemini API интеграция
-  - [ ] Промпт templates
-  - [ ] Обработка результатов
+- [x] **Logic Understanding Agent** - Доработать ✅
+  - [x] Gemini API интеграция ✅
+  - [x] Google Search Tool ✅
+  - [x] Code Execution ✅
+  - [x] Function Calling ✅
+  - [x] Промпт templates ✅
+  - [x] Обработка результатов ✅
 
-- [ ] **Visualization Agent** - Создать с нуля
+- [ ] **Visualization Agent** - Создать с нуля (0% → 100%)
   - [ ] Plotly integration
   - [ ] Генерация графиков
-  - [ ] Сохранение в Storage
+  - [ ] Сохранение в Cloud Storage
+  - [ ] Chart types: line, bar, pie, scatter
 
 ### Terraform
 - [ ] **CloudSQL Module** - Завершить
@@ -52,9 +56,15 @@
 - [ ] **API.md** - OpenAPI/Swagger документация
 - [ ] **DEPLOYMENT_GUIDE.md** - Полный гайд по деплою
 - [ ] **TROUBLESHOOTING.md** - Решение проблем
+- [ ] **GOOGLE_TOOLS.md** - Документация по Google AI Tools
 
 ### Тесты
 - [ ] Unit тесты для каждого агента
+  - [ ] Frontend Service tests
+  - [ ] Orchestrator tests
+  - [ ] Report Reader tests
+  - [ ] Logic Understanding tests
+  - [ ] Visualization tests
 - [ ] Integration тесты
 - [ ] E2E тесты
 - [ ] Load testing
@@ -74,6 +84,7 @@
 - [ ] Multi-language support
 - [ ] Email notifications
 - [ ] Slack integration
+- [ ] Voice commands ("Привет, проанализируй мой отчёт")
 
 ### Оптимизация
 - [ ] Redis caching
@@ -87,14 +98,8 @@
 - [ ] Backup/restore automation
 - [ ] Disaster recovery plan
 
-## 📋 Для Каждой Задачи
+## 🎯 Следующий Шаг
 
-Когда берёшь задачу:
-1. Обнови STATUS.md
-2. Создай ветку `git checkout -b feature/task-name`
-3. Сделай изменения
-4. Протестируй локально
-5. Коммит `git commit -m "Add: task description"`
-6. Push `git push origin feature/task-name`
-7. Обнови TODO.md (отметь галочкой)
-
+**Приоритет #1:** Создать Visualization Agent с Plotly и Cloud Storage
+**Приоритет #2:** Завершить Orchestrator Agent с State Machine
+**Приоритет #3:** Настроить E2E flow между всеми агентами

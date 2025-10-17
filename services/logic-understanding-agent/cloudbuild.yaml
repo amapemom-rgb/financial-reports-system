@@ -1,0 +1,52 @@
+# Cloud Build configuration for Logic Understanding Agent (with Reasoning Engine)
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/logic-understanding-agent:${SHORT_SHA}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/logic-understanding-agent:latest'
+      - '-f'
+      - 'services/logic-understanding-agent/Dockerfile'
+      - 'services/logic-understanding-agent'
+    id: 'build-image'
+
+  # Step 2: Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/logic-understanding-agent'
+    id: 'push-image'
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'logic-understanding-agent'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/logic-understanding-agent:${SHORT_SHA}'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--cpu=2'
+      - '--memory=2Gi'
+      - '--min-instances=0'
+      - '--max-instances=10'
+      - '--concurrency=20'
+      - '--timeout=600'
+    id: 'deploy-cloud-run'
+
+substitutions:
+  _REGION: us-central1
+  _ARTIFACT_REPO: financial-reports
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: 1200s

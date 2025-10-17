@@ -1,7 +1,8 @@
 #!/bin/bash
 # Quick Start Script - Interactive menu for testing the system
 
-set -e
+# Don't exit on errors in interactive mode
+set +e
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -64,10 +65,12 @@ while true; do
                 url="${service##*:}"
                 echo -n "  $name: "
                 
-                status=$(curl -s -H "Authorization: Bearer $TOKEN" "$url/health" | jq -r '.status' 2>/dev/null)
+                response=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" "$url/health" 2>/dev/null || echo "error")
                 
-                if [ "$status" == "healthy" ]; then
+                if echo "$response" | grep -q "healthy"; then
                     echo -e "${GREEN}✅ healthy${NC}"
+                elif [ "$response" = "error" ]; then
+                    echo -e "${RED}❌ connection error${NC}"
                 else
                     echo -e "${RED}❌ unhealthy${NC}"
                 fi

@@ -3,11 +3,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for document processing
+# Install system dependencies for file parsing
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    poppler-utils \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies

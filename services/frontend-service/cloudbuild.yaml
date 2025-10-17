@@ -17,14 +17,9 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/frontend-service:${SHORT_SHA}'
-    id: 'push-image-sha'
-
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/frontend-service:latest'
-    id: 'push-image-latest'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/frontend-service'
+    id: 'push-image'
 
   # Step 3: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -37,12 +32,16 @@ steps:
       - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--cpu=1'
+      - '--memory=512Mi'
+      - '--min-instances=0'
+      - '--max-instances=10'
+      - '--concurrency=80'
+      - '--timeout=300'
     id: 'deploy-cloud-run'
 
-images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/frontend-service:${SHORT_SHA}'
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/frontend-service:latest'
-
+# Substitutions
 substitutions:
   _REGION: us-central1
   _ARTIFACT_REPO: financial-reports
@@ -50,3 +49,5 @@ substitutions:
 options:
   logging: CLOUD_LOGGING_ONLY
   machineType: 'E2_HIGHCPU_8'
+
+timeout: 1200s

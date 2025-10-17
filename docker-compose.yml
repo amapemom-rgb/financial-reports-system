@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Infrastructure
   postgres:
     image: postgres:15
     container_name: financial-reports-db
@@ -17,6 +18,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - financial-network
 
   pubsub-emulator:
     image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
@@ -25,7 +28,9 @@ services:
     ports:
       - "8085:8085"
     environment:
-      PUBSUB_PROJECT_ID: local-project
+      PUBSUB_PROJECT_ID: financial-reports-ai-2024
+    networks:
+      - financial-network
 
   storage-emulator:
     image: fsouza/fake-gcs-server
@@ -35,11 +40,105 @@ services:
     command: -scheme http -port 4443 -external-url http://localhost:4443
     volumes:
       - storage_data:/data
+    networks:
+      - financial-network
+
+  # Agents
+  frontend-service:
+    build:
+      context: ./agents/frontend-service
+      dockerfile: Dockerfile
+    container_name: frontend-service
+    ports:
+      - "8080:8080"
+    environment:
+      - PROJECT_ID=financial-reports-ai-2024
+      - REGION=us-central1
+      - LOGIC_AGENT_URL=http://logic-understanding-agent:8082
+      - REPORT_READER_URL=http://report-reader-agent:8081
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8084
+    depends_on:
+      - orchestrator-agent
+    networks:
+      - financial-network
+
+  report-reader-agent:
+    build:
+      context: ./agents/report-reader-agent
+      dockerfile: Dockerfile
+    container_name: report-reader-agent
+    ports:
+      - "8081:8081"
+    environment:
+      - PROJECT_ID=financial-reports-ai-2024
+      - GOOGLE_CREDENTIALS_PATH=/secrets/google-credentials.json
+    volumes:
+      - ./secrets:/secrets:ro
+    networks:
+      - financial-network
+
+  logic-understanding-agent:
+    build:
+      context: ./agents/logic-understanding-agent
+      dockerfile: Dockerfile
+    container_name: logic-understanding-agent
+    ports:
+      - "8082:8082"
+    environment:
+      - PROJECT_ID=financial-reports-ai-2024
+      - REGION=us-central1
+    volumes:
+      - ./secrets:/secrets:ro
+    networks:
+      - financial-network
+
+  visualization-agent:
+    build:
+      context: ./agents/visualization-agent
+      dockerfile: Dockerfile
+    container_name: visualization-agent
+    ports:
+      - "8083:8083"
+    environment:
+      - PROJECT_ID=financial-reports-ai-2024
+      - STORAGE_BUCKET=financial-reports-ai-2024-visualizations
+      - STORAGE_EMULATOR_HOST=storage-emulator:4443
+    depends_on:
+      - storage-emulator
+    networks:
+      - financial-network
+
+  orchestrator-agent:
+    build:
+      context: ./agents/orchestrator-agent
+      dockerfile: Dockerfile
+    container_name: orchestrator-agent
+    ports:
+      - "8084:8084"
+    environment:
+      - PROJECT_ID=financial-reports-ai-2024
+      - REGION=us-central1
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/financial_reports
+      - FRONTEND_URL=http://frontend-service:8080
+      - REPORT_READER_URL=http://report-reader-agent:8081
+      - LOGIC_AGENT_URL=http://logic-understanding-agent:8082
+      - VISUALIZATION_URL=http://visualization-agent:8083
+      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
+      - PUBSUB_TOPIC=task-queue-topic
+    depends_on:
+      - postgres
+      - pubsub-emulator
+      - report-reader-agent
+      - logic-understanding-agent
+      - visualization-agent
+    networks:
+      - financial-network
 
 volumes:
   postgres_data:
   storage_data:
 
 networks:
-  default:
+  financial-network:
     name: financial-reports-network
+    driver: bridge

@@ -1,6 +1,9 @@
 fastapi==0.109.0
-google-cloud-pubsub==2.19.0
-google-cloud-storage==2.14.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
 pandas==2.1.4
 openpyxl==3.1.2
-gspread==5.12.3
+google-api-python-client==2.108.0
+google-auth==2.25.2
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0

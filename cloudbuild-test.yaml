@@ -1,31 +1,31 @@
 # Test Cloud Build Configuration
-# Simple test to build and push one service to Artifact Registry
+# Simple test to build and push frontend-service to Artifact Registry
 
 steps:
-  # Build Docker image for data-ingestion-service
+  # Build Docker image for frontend-service
   - name: 'gcr.io/cloud-builders/docker'
-    id: 'build-data-ingestion'
+    id: 'build-frontend'
     args:
       - 'build'
       - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service:$SHORT_SHA'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:$SHORT_SHA'
       - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service:latest'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:latest'
       - '-f'
-      - 'services/data-ingestion-service/Dockerfile'
-      - 'services/data-ingestion-service'
+      - 'services/frontend-service/Dockerfile'
+      - 'services/frontend-service'
 
   # Push Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    id: 'push-data-ingestion'
+    id: 'push-frontend'
     args:
       - 'push'
       - '--all-tags'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service'
-    waitFor: ['build-data-ingestion']
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service'
+    waitFor: ['build-frontend']
 
 # Simple timeout
-timeout: '600s'
+timeout: '900s'
 
 # Options
 options:

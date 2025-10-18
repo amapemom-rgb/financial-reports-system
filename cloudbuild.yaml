@@ -1,59 +1,187 @@
-# ☁️ Cloud Build Configuration для автоматического деплоя
+# Main Cloud Build configuration for all microservices
+# This builds and deploys all 5 services sequentially
 
 steps:
-  # Step 1: Build Docker image
+  # ============================================
+  # Frontend Service
+  # ============================================
   - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/$PROJECT_ID/interactive-demo:$COMMIT_SHA'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:$SHORT_SHA'
       - '-t'
-      - 'gcr.io/$PROJECT_ID/interactive-demo:latest'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:latest'
       - '-f'
-      - 'scripts/Dockerfile.interactive'
-      - '.'
-    id: 'build-image'
+      - 'services/frontend-service/Dockerfile'
+      - 'services/frontend-service'
 
-  # Step 2: Push to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'gcr.io/$PROJECT_ID/interactive-demo:$COMMIT_SHA'
-    id: 'push-image'
+    id: 'push-frontend'
+    args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service']
+    waitFor: ['build-frontend']
 
-  # Step 3: Push latest tag
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'gcr.io/$PROJECT_ID/interactive-demo:latest'
-    id: 'push-latest'
-
-  # Step 4: Deploy to Cloud Run
-  - name: 'gcr.io/cloud-builders/gcloud'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-frontend'
+    entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'interactive-demo'
-      - '--image=gcr.io/$PROJECT_ID/interactive-demo:$COMMIT_SHA'
+      - 'frontend-service'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:$SHORT_SHA'
       - '--region=us-central1'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--memory=512Mi'
+    waitFor: ['push-frontend']
+
+  # ============================================
+  # Orchestrator Agent
+  # ============================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-orchestrator'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/orchestrator-agent:$SHORT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/orchestrator-agent:latest'
+      - '-f'
+      - 'services/orchestrator-agent/Dockerfile'
+      - 'services/orchestrator-agent'
+    waitFor: ['deploy-frontend']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-orchestrator'
+    args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/orchestrator-agent']
+    waitFor: ['build-orchestrator']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-orchestrator'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orchestrator-agent'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/orchestrator-agent:$SHORT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+    waitFor: ['push-orchestrator']
+
+  # ============================================
+  # Report Reader Agent
+  # ============================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-report-reader'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/report-reader-agent:$SHORT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/report-reader-agent:latest'
+      - '-f'
+      - 'services/report-reader-agent/Dockerfile'
+      - 'services/report-reader-agent'
+    waitFor: ['deploy-orchestrator']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-report-reader'
+    args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/report-reader-agent']
+    waitFor: ['build-report-reader']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-report-reader'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'report-reader-agent'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/report-reader-agent:$SHORT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=1Gi'
+      - '--cpu=2'
+    waitFor: ['push-report-reader']
+
+  # ============================================
+  # Logic Understanding Agent
+  # ============================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-logic'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/logic-understanding-agent:$SHORT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/logic-understanding-agent:latest'
+      - '-f'
+      - 'services/logic-understanding-agent/Dockerfile'
+      - 'services/logic-understanding-agent'
+    waitFor: ['deploy-report-reader']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-logic'
+    args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/logic-understanding-agent']
+    waitFor: ['build-logic']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-logic'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'logic-understanding-agent'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/logic-understanding-agent:$SHORT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--timeout=300'
+    waitFor: ['push-logic']
+
+  # ============================================
+  # Visualization Agent
+  # ============================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-visualization'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/visualization-agent:$SHORT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/visualization-agent:latest'
+      - '-f'
+      - 'services/visualization-agent/Dockerfile'
+      - 'services/visualization-agent'
+    waitFor: ['deploy-logic']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-visualization'
+    args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/visualization-agent']
+    waitFor: ['build-visualization']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-visualization'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'visualization-agent'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/visualization-agent:$SHORT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=1Gi'
       - '--cpu=1'
-      - '--max-instances=10'
-      - '--min-instances=0'
-      - '--port=8080'
-      - '--set-env-vars=PROJECT_ID=$PROJECT_ID,REGION=us-central1'
-    id: 'deploy-cloud-run'
+    waitFor: ['push-visualization']
 
-# Images to save
-images:
-  - 'gcr.io/$PROJECT_ID/interactive-demo:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/interactive-demo:latest'
+# Timeout for entire build
+timeout: '3600s'
 
-# Build options
+# Options
 options:
-  machineType: 'N1_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
-  
-timeout: '1200s'
+  machineType: 'E2_HIGHCPU_8'

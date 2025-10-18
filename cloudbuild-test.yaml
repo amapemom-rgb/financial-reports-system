@@ -12,8 +12,8 @@ steps:
       - '-t'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service:latest'
       - '-f'
-      - 'services/frontend-service/Dockerfile'
-      - 'services/frontend-service'
+      - 'agents/frontend-service/Dockerfile'
+      - 'agents/frontend-service'
 
   # Push Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
@@ -24,7 +24,7 @@ steps:
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/frontend-service'
     waitFor: ['build-frontend']
 
-# Simple timeout
+# Timeout for build
 timeout: '900s'
 
 # Options

@@ -1,0 +1,33 @@
+# Test Cloud Build Configuration
+# Simple test to build and push one service to Artifact Registry
+
+steps:
+  # Build Docker image for data-ingestion-service
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-data-ingestion'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service:$SHORT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service:latest'
+      - '-f'
+      - 'services/data-ingestion-service/Dockerfile'
+      - 'services/data-ingestion-service'
+
+  # Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-data-ingestion'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/financial-reports/data-ingestion-service'
+    waitFor: ['build-data-ingestion']
+
+# Simple timeout
+timeout: '600s'
+
+# Options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'

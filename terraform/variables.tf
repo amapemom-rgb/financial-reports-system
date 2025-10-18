@@ -13,10 +13,11 @@ variable "region" {
 }
 
 variable "github_connection" {
-  description = "GitHub connection ID created manually via Cloud Console (see docs/GITHUB_OAUTH_SETUP.md)"
+  description = "GitHub connection ID (OPTIONAL - only needed if Terraform manages Cloud Build triggers)"
   type        = string
+  default     = null
   # Example: "projects/123456789/locations/global/connections/github-abcd1234"
-  # This must be created manually once via Cloud Console due to OAuth requirements
+  # Leave as null if managing triggers manually via Console
 }
 
 variable "github_owner" {

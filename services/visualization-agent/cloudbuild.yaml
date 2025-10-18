@@ -1,4 +1,6 @@
 # Cloud Build configuration for Visualization Agent
+# This service generates charts and visualizations
+
 steps:
   # Step 1: Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
@@ -13,15 +15,21 @@ steps:
       - 'services/visualization-agent'
     id: 'build-image'
 
-  # Step 2: Push Docker image to Artifact Registry
+  # Step 2: Push Docker image with commit SHA tag
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
-      - '--all-tags'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/visualization-agent'
-    id: 'push-image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/visualization-agent:${SHORT_SHA}'
+    id: 'push-image-sha'
 
-  # Step 3: Deploy to Cloud Run
+  # Step 3: Push Docker image with latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/visualization-agent:latest'
+    id: 'push-image-latest'
+
+  # Step 4: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -32,21 +40,25 @@ steps:
       - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--port=8080'
-      - '--cpu=1'
       - '--memory=1Gi'
-      - '--min-instances=0'
+      - '--cpu=1'
       - '--max-instances=10'
-      - '--concurrency=40'
-      - '--timeout=300'
+      - '--min-instances=0'
     id: 'deploy-cloud-run'
 
+# Images to be pushed to Artifact Registry
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/visualization-agent:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/visualization-agent:latest'
+
+# Substitutions for variable replacement
 substitutions:
   _REGION: us-central1
   _ARTIFACT_REPO: financial-reports
 
+# Build options
 options:
   logging: CLOUD_LOGGING_ONLY
   machineType: 'E2_HIGHCPU_8'
-
-timeout: 1200s
+  
+timeout: '900s'

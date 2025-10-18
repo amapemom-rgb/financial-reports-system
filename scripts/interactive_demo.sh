@@ -21,17 +21,66 @@ echo -e "${GREEN}🚀 Financial Reports System - Quick Start${NC}"
 echo "=========================================="
 echo ""
 
-# Get token
+# Function to get fresh token
+get_token() {
+    gcloud auth print-identity-token 2>/dev/null
+}
+
+# Initial token check
 echo -e "${YELLOW}🔐 Getting auth token...${NC}"
-export TOKEN=$(gcloud auth print-identity-token)
+TOKEN=$(get_token)
 
 if [ -z "$TOKEN" ]; then
     echo -e "${RED}❌ Failed to get auth token. Make sure you're logged in with gcloud.${NC}"
+    echo ""
+    echo "Try running:"
+    echo "  gcloud auth login"
     exit 1
 fi
 
 echo -e "${GREEN}✅ Token obtained${NC}"
 echo ""
+
+# Function to check service health
+check_service_health() {
+    local name=$1
+    local url=$2
+    
+    # Get fresh token for this request
+    local token=$(get_token)
+    
+    echo -n "  $name: "
+    
+    # Make request and capture both response and HTTP code
+    local temp_file=$(mktemp)
+    local http_code=$(curl -s -w "%{http_code}" -m 10 \
+        -H "Authorization: Bearer $token" \
+        -o "$temp_file" \
+        "$url/health" 2>/dev/null)
+    
+    local response=$(cat "$temp_file")
+    rm -f "$temp_file"
+    
+    # Check HTTP code first
+    if [ "$http_code" = "200" ]; then
+        # Check if response contains "healthy"
+        if echo "$response" | grep -q "healthy"; then
+            echo -e "${GREEN}✅ healthy${NC} (HTTP $http_code)"
+        else
+            echo -e "${YELLOW}⚠️  responded but status unclear${NC} (HTTP $http_code)"
+            if [ -n "$VERBOSE" ]; then
+                echo "     Response: $response"
+            fi
+        fi
+    elif [ -z "$http_code" ]; then
+        echo -e "${RED}❌ connection error${NC} (timeout or network issue)"
+    else
+        echo -e "${RED}❌ unhealthy${NC} (HTTP $http_code)"
+        if [ -n "$VERBOSE" ]; then
+            echo "     Response: $response"
+        fi
+    fi
+}
 
 # Menu
 while true; do
@@ -48,9 +97,10 @@ while true; do
     echo "  7. 🎤 Голосовой анализ (demo)"
     echo "  8. 🤖 Информация об AI агенте"
     echo "  9. 📚 Открыть руководство"
+    echo "  v. 🔧 Включить/выключить verbose режим"
     echo "  0. ❌ Выход"
     echo ""
-    read -p "Введите номер (0-9): " choice
+    read -p "Введите номер (0-9, v): " choice
     echo ""
 
     case $choice in
@@ -58,23 +108,13 @@ while true; do
             echo -e "${YELLOW}🏥 Проверка здоровья сервисов...${NC}"
             echo ""
             
-            services=("frontend-service:$FRONTEND_URL" "orchestrator-agent:$ORCHESTRATOR_URL" "report-reader-agent:$REPORT_READER_URL" "logic-understanding-agent:$LOGIC_AGENT_URL" "visualization-agent:$VISUALIZATION_URL")
+            # Check each service
+            check_service_health "frontend-service" "$FRONTEND_URL"
+            check_service_health "orchestrator-agent" "$ORCHESTRATOR_URL"
+            check_service_health "report-reader-agent" "$REPORT_READER_URL"
+            check_service_health "logic-understanding-agent" "$LOGIC_AGENT_URL"
+            check_service_health "visualization-agent" "$VISUALIZATION_URL"
             
-            for service in "${services[@]}"; do
-                name="${service%%:*}"
-                url="${service##*:}"
-                echo -n "  $name: "
-                
-                response=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" "$url/health" 2>/dev/null || echo "error")
-                
-                if echo "$response" | grep -q "healthy"; then
-                    echo -e "${GREEN}✅ healthy${NC}"
-                elif [ "$response" = "error" ]; then
-                    echo -e "${RED}❌ connection error${NC}"
-                else
-                    echo -e "${RED}❌ unhealthy${NC}"
-                fi
-            done
             echo ""
             ;;
             
@@ -105,6 +145,9 @@ EOF
                 continue
             fi
             
+            # Get fresh token
+            TOKEN=$(get_token)
+            
             echo -e "${YELLOW}📤 Загрузка файла...${NC}"
             
             upload_response=$(curl -s -X POST \
@@ -116,7 +159,7 @@ EOF
             
             file_id=$(echo "$upload_response" | jq -r '.file_id')
             
-            if [ "$file_id" != "null" ]; then
+            if [ "$file_id" != "null" ] && [ -n "$file_id" ]; then
                 echo ""
                 echo -e "${YELLOW}🤖 Создание задачи на анализ...${NC}"
                 
@@ -136,7 +179,7 @@ EOF
                 
                 task_id=$(echo "$task_response" | jq -r '.task_id')
                 
-                if [ "$task_id" != "null" ]; then
+                if [ "$task_id" != "null" ] && [ -n "$task_id" ]; then
                     echo ""
                     echo -e "${GREEN}✅ Задача создана: $task_id${NC}"
                     echo ""
@@ -145,9 +188,14 @@ EOF
                     
                     echo ""
                     echo -e "${YELLOW}📊 Проверка статуса...${NC}"
+                    
+                    # Get fresh token for status check
+                    TOKEN=$(get_token)
                     curl -s -H "Authorization: Bearer $TOKEN" \
                         "$ORCHESTRATOR_URL/tasks/$task_id" | jq
                 fi
+            else
+                echo -e "${RED}❌ Не удалось получить file_id из ответа${NC}"
             fi
             echo ""
             ;;
@@ -155,6 +203,9 @@ EOF
         4)
             echo -e "${YELLOW}📈 Создание визуализации...${NC}"
             echo ""
+            
+            # Get fresh token
+            TOKEN=$(get_token)
             
             viz_response=$(curl -s -X POST \
                 -H "Authorization: Bearer $TOKEN" \
@@ -175,7 +226,7 @@ EOF
             
             chart_url=$(echo "$viz_response" | jq -r '.chart_url')
             
-            if [ "$chart_url" != "null" ]; then
+            if [ "$chart_url" != "null" ] && [ -n "$chart_url" ]; then
                 echo ""
                 echo -e "${GREEN}✅ График создан!${NC}"
                 echo -e "${BLUE}URL: $chart_url${NC}"
@@ -183,7 +234,7 @@ EOF
                 read -p "Открыть график в браузере? (y/n): " open_chart
                 
                 if [ "$open_chart" == "y" ]; then
-                    open "$chart_url"
+                    open "$chart_url" 2>/dev/null || xdg-open "$chart_url" 2>/dev/null
                 fi
             fi
             echo ""
@@ -192,6 +243,10 @@ EOF
         5)
             echo -e "${YELLOW}📋 Все задачи:${NC}"
             echo ""
+            
+            # Get fresh token
+            TOKEN=$(get_token)
+            
             curl -s -H "Authorization: Bearer $TOKEN" \
                 "$ORCHESTRATOR_URL/tasks?limit=10" | jq
             echo ""
@@ -204,6 +259,10 @@ EOF
             
             if [ -n "$task_id" ]; then
                 echo ""
+                
+                # Get fresh token
+                TOKEN=$(get_token)
+                
                 curl -s -H "Authorization: Bearer $TOKEN" \
                     "$ORCHESTRATOR_URL/tasks/$task_id" | jq
             fi
@@ -217,6 +276,7 @@ EOF
             echo ""
             echo "Пример команды:"
             echo ""
+            echo 'TOKEN=$(gcloud auth print-identity-token)'
             echo 'curl -X POST \'
             echo '  -H "Authorization: Bearer $TOKEN" \'
             echo '  -F "audio=@/path/to/audio.wav" \'
@@ -233,6 +293,10 @@ EOF
         8)
             echo -e "${YELLOW}🤖 Информация об AI агенте${NC}"
             echo ""
+            
+            # Get fresh token
+            TOKEN=$(get_token)
+            
             curl -s -H "Authorization: Bearer $TOKEN" \
                 "$LOGIC_AGENT_URL/agent/info" | jq
             echo ""
@@ -242,13 +306,24 @@ EOF
             echo -e "${YELLOW}📚 Открытие руководства...${NC}"
             
             if [ -f USER_GUIDE.md ]; then
-                open USER_GUIDE.md
+                open USER_GUIDE.md 2>/dev/null || xdg-open USER_GUIDE.md 2>/dev/null
                 echo -e "${GREEN}✅ Руководство открыто${NC}"
             else
-                echo -e "${RED}❌ Файл USER_GUIDE.md не найден${NC}"
+                echo -e "${RED}❌ Файл USER_GUIDE.md не найден в текущей директории${NC}"
                 echo ""
                 echo "Документация доступна онлайн:"
                 echo "https://github.com/amapemom-rgb/financial-reports-system"
+            fi
+            echo ""
+            ;;
+            
+        v|V)
+            if [ -z "$VERBOSE" ]; then
+                export VERBOSE=1
+                echo -e "${GREEN}✅ Verbose режим включен${NC}"
+            else
+                unset VERBOSE
+                echo -e "${YELLOW}⚠️  Verbose режим выключен${NC}"
             fi
             echo ""
             ;;

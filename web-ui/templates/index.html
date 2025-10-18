@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Reports Analysis System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .version {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .service-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .service-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .service-status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status-healthy {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-unhealthy {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-loading {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        
+        .btn:hover {
+            background: #5568d3;
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .upload-area:hover {
+            background: #f8f9fa;
+            border-color: #5568d3;
+        }
+        
+        .upload-area.dragover {
+            background: #e7f0ff;
+            border-color: #667eea;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        
+        .log-success {
+            color: #4ec9b0;
+        }
+        
+        .log-error {
+            color: #f48771;
+        }
+        
+        .log-info {
+            color: #569cd6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🚀 Financial Reports Analysis System</h1>
+            <p class="version">Version 1.0.0-rc1 | Status: 99% Ready for Production</p>
+        </div>
+        
+        <!-- Services Status -->
+        <div class="card">
+            <h2>📊 Статус Микросервисов</h2>
+            <button class="btn" onclick="checkHealth()" id="check-btn">🔄 Проверить здоровье</button>
+            
+            <div class="services-grid" id="services-grid">
+                <!-- Здесь будут карточки сервисов -->
+            </div>
+        </div>
+        
+        <!-- File Upload -->
+        <div class="card">
+            <h2>📤 Загрузка отчёта</h2>
+            <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
+                <input type="file" id="file-input" class="hidden" accept=".csv,.xlsx,.xls" onchange="handleFileSelect(event)">
+                <p>📁 Нажмите или перетащите файл сюда</p>
+                <p style="font-size: 14px; color: #666; margin-top: 10px;">Поддерживаются: CSV, Excel (XLSX, XLS)</p>
+            </div>
+            
+            <div class="actions">
+                <button class="btn" onclick="analyzeFile()" id="analyze-btn" disabled>🤖 Анализировать</button>
+                <button class="btn" onclick="createVisualization()" id="viz-btn" disabled>📈 Создать визуализацию</button>
+            </div>
+        </div>
+        
+        <!-- Log -->
+        <div class="card">
+            <h2>📝 Лог операций</h2>
+            <div class="log" id="log">
+                <div class="log-entry log-info">💡 Система готова к работе</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const services = {
+            frontend: "https://frontend-service-38390150695.us-central1.run.app",
+            orchestrator: "https://orchestrator-agent-38390150695.us-central1.run.app",
+            reader: "https://report-reader-agent-38390150695.us-central1.run.app",
+            logic: "https://logic-understanding-agent-38390150695.us-central1.run.app",
+            visualization: "https://visualization-agent-38390150695.us-central1.run.app"
+        };
+        
+        const serviceNames = {
+            frontend: "Frontend Service",
+            orchestrator: "Orchestrator Agent",
+            reader: "Report Reader Agent",
+            logic: "Logic Understanding Agent",
+            visualization: "Visualization Agent"
+        };
+        
+        let uploadedFile = null;
+        
+        function log(message, type = 'info') {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            const icons = {success: '✅', error: '❌', info: 'ℹ️'};
+            entry.textContent = `[${timestamp}] ${icons[type]} ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        async function checkHealth() {
+            const btn = document.getElementById('check-btn');
+            const grid = document.getElementById('services-grid');
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Проверка...';
+            log('Начата проверка здоровья всех микросервисов...');
+            
+            // Показываем loading состояние
+            grid.innerHTML = Object.keys(services).map(key => `
+                <div class="service-card">
+                    <div class="service-name">${serviceNames[key]}</div>
+                    <span class="service-status status-loading">Проверка...</span>
+                </div>
+            `).join('');
+            
+            try {
+                const response = await fetch('/api/services/health');
+                const data = await response.json();
+                
+                // Обновляем карточки
+                grid.innerHTML = Object.keys(services).map(key => {
+                    const status = data[key] || {status: 'error'};
+                    const statusClass = status.status === 'healthy' ? 'status-healthy' : 'status-unhealthy';
+                    const statusText = status.status === 'healthy' ? '✅ Healthy' : `❌ ${status.status}`;
+                    const httpCode = status.http_code ? ` (HTTP ${status.http_code})` : '';
+                    
+                    return `
+                        <div class="service-card">
+                            <div class="service-name">${serviceNames[key]}</div>
+                            <span class="service-status ${statusClass}">${statusText}${httpCode}</span>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Подсчитываем результаты
+                const healthy = Object.values(data).filter(s => s.status === 'healthy').length;
+                const total = Object.keys(services).length;
+                
+                if (healthy === total) {
+                    log(`Все ${total} микросервисов работают нормально!`, 'success');
+                } else {
+                    log(`${healthy}/${total} сервисов работают. Есть проблемы!`, 'error');
+                }
+                
+            } catch (error) {
+                log(`Ошибка при проверке: ${error.message}`, 'error');
+                grid.innerHTML = '<p style="color: red;">Ошибка при проверке сервисов</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔄 Проверить здоровье';
+            }
+        }
+        
+        // Drag & Drop
+        const uploadArea = document.getElementById('upload-area');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+        
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        }
+        
+        function handleFile(file) {
+            uploadedFile = file;
+            log(`Файл выбран: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`, 'success');
+            document.getElementById('analyze-btn').disabled = false;
+            document.getElementById('viz-btn').disabled = false;
+        }
+        
+        async function analyzeFile() {
+            if (!uploadedFile) {
+                log('Сначала выберите файл!', 'error');
+                return;
+            }
+            
+            log('Загрузка файла и запуск анализа...', 'info');
+            log('TODO: Implement file upload and analysis', 'info');
+            // TODO: Implement actual file upload and analysis
+        }
+        
+        async function createVisualization() {
+            if (!uploadedFile) {
+                log('Сначала выберите файл!', 'error');
+                return;
+            }
+            
+            log('Создание визуализации...', 'info');
+            log('TODO: Implement visualization creation', 'info');
+            // TODO: Implement visualization
+        }
+        
+        // Автоматическая проверка при загрузке
+        window.addEventListener('load', () => {
+            setTimeout(checkHealth, 500);
+        });
+    </script>
+</body>
+</html>

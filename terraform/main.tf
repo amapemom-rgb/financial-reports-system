@@ -1,5 +1,8 @@
+# Financial Reports Analysis System - Main Terraform Configuration
+# This file orchestrates all modules and creates the complete infrastructure
+
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5.0"
   
   required_providers {
     google = {
@@ -7,8 +10,15 @@ terraform {
       version = "~> 5.0"
     }
   }
+  
+  # Backend configuration for state storage
+  backend "gcs" {
+    bucket = "financial-reports-terraform-state"
+    prefix = "terraform/state"
+  }
 }
 
+# Provider configuration
 provider "google" {
   project = var.project_id
   region  = var.region
@@ -22,216 +32,136 @@ resource "google_project_service" "required_apis" {
     "artifactregistry.googleapis.com",
     "pubsub.googleapis.com",
     "storage.googleapis.com",
-    "sqladmin.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
-    "iam.googleapis.com",
-    "compute.googleapis.com",
+    "aiplatform.googleapis.com",
+    "secretmanager.googleapis.com",
   ])
-
-  service            = each.value
+  
+  service            = each.key
   disable_on_destroy = false
 }
 
-# Pub/Sub Topic
+# Artifact Registry for Docker images
+resource "google_artifact_registry_repository" "docker_repo" {
+  location      = var.region
+  repository_id = "financial-reports"
+  description   = "Docker repository for Financial Reports System microservices"
+  format        = "DOCKER"
+  
+  depends_on = [google_project_service.required_apis]
+}
+
+# Cloud Storage module for file storage
+module "storage" {
+  source = "./modules/storage"
+  
+  project_id = var.project_id
+  region     = var.region
+  
+  depends_on = [google_project_service.required_apis]
+}
+
+# Pub/Sub module for async messaging
 module "pubsub" {
   source = "./modules/pubsub"
-
+  
   project_id = var.project_id
-  topic_name = "task-queue-topic"
-  subscription_names = [
-    "orchestrator-subscription",
-    "report-reader-subscription",
-    "logic-agent-subscription"
-  ]
-
+  
   depends_on = [google_project_service.required_apis]
 }
 
-# Storage Buckets
-module "reports_storage" {
-  source = "./modules/storage"
-
-  project_id    = var.project_id
-  bucket_name   = "${var.project_id}-reports"
-  location      = "US"
-  public_access = false
-
+# IAM module for service accounts and permissions
+module "iam" {
+  source = "./modules/iam"
+  
+  project_id = var.project_id
+  region     = var.region
+  
   depends_on = [google_project_service.required_apis]
 }
 
-module "visualizations_storage" {
-  source = "./modules/storage"
-
-  project_id    = var.project_id
-  bucket_name   = "${var.project_id}-visualizations"
-  location      = "US"
-  public_access = true
-
-  depends_on = [google_project_service.required_apis]
-}
-
-# Service Account for Cloud Run
-resource "google_service_account" "cloud_run_sa" {
-  account_id   = "financial-reports-sa"
-  display_name = "Financial Reports Service Account"
-  project      = var.project_id
-
-  depends_on = [google_project_service.required_apis]
-}
-
-# IAM roles for service account
-resource "google_project_iam_member" "cloud_run_sa_roles" {
-  for_each = toset([
-    "roles/run.invoker",
-    "roles/pubsub.publisher",
-    "roles/pubsub.subscriber",
-    "roles/storage.objectAdmin",
-    "roles/aiplatform.user",
-    "roles/secretmanager.secretAccessor"
-  ])
-
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
-
-  depends_on = [google_service_account.cloud_run_sa]
-}
-
-# Cloud Run Services
-module "frontend_service" {
-  source = "./modules/cloudrun"
-
-  project_id            = var.project_id
-  region                = var.region
-  service_name          = "frontend-service"
-  image                 = "${var.region}-docker.pkg.dev/${var.project_id}/financial-reports/frontend-service:latest"
-  service_account_email = google_service_account.cloud_run_sa.email
-  memory                = "512Mi"
-  cpu                   = "1"
-  max_instances         = 10
-  allow_unauthenticated = true
-
-  env_vars = {
-    PROJECT_ID            = var.project_id
-    REGION                = var.region
-    ORCHESTRATOR_URL      = module.orchestrator_agent.service_url
-    REPORT_READER_URL     = module.report_reader_agent.service_url
-    LOGIC_AGENT_URL       = module.logic_agent.service_url
-  }
-
+# Cloud Build triggers module (OPTIONAL - only if github_connection provided)
+module "cloud_build" {
+  source = "./modules/cloud_build"
+  
+  # Only create if github_connection is provided
+  count = var.github_connection != null ? 1 : 0
+  
+  project_id         = var.project_id
+  region             = var.region
+  github_connection  = var.github_connection
+  github_owner       = var.github_owner
+  github_repo        = var.github_repo
+  artifact_repo_name = google_artifact_registry_repository.docker_repo.name
+  
   depends_on = [
     google_project_service.required_apis,
-    google_service_account.cloud_run_sa,
-    google_project_iam_member.cloud_run_sa_roles
+    google_artifact_registry_repository.docker_repo
   ]
 }
 
-module "report_reader_agent" {
-  source = "./modules/cloudrun"
-
+# Cloud Run services module
+module "cloud_run" {
+  source = "./modules/cloud_run"
+  
   project_id            = var.project_id
   region                = var.region
-  service_name          = "report-reader-agent"
-  image                 = "${var.region}-docker.pkg.dev/${var.project_id}/financial-reports/report-reader-agent:latest"
-  service_account_email = google_service_account.cloud_run_sa.email
-  memory                = "1Gi"
-  cpu                   = "2"
-  max_instances         = 20
-  allow_unauthenticated = false
-
+  artifact_repo_name    = google_artifact_registry_repository.docker_repo.name
+  service_account_email = module.iam.service_account_email
+  
+  # Environment variables for services
   env_vars = {
-    PROJECT_ID = var.project_id
-    REGION     = var.region
+    PROJECT_ID                = var.project_id
+    REGION                    = var.region
+    REPORTS_BUCKET           = module.storage.reports_bucket_name
+    CHARTS_BUCKET            = module.storage.charts_bucket_name
+    TASKS_TOPIC              = module.pubsub.tasks_topic_name
+    RESULTS_TOPIC            = module.pubsub.results_topic_name
+    GEMINI_MODEL             = var.gemini_model
+    LOG_LEVEL                = var.log_level
+    ENABLE_REASONING_ENGINE  = var.enable_reasoning_engine ? "true" : "false"
   }
-
+  
   depends_on = [
     google_project_service.required_apis,
-    google_service_account.cloud_run_sa,
-    google_project_iam_member.cloud_run_sa_roles
+    module.iam,
+    module.storage,
+    module.pubsub,
+    google_artifact_registry_repository.docker_repo
   ]
 }
 
-module "logic_agent" {
-  source = "./modules/cloudrun"
-
-  project_id            = var.project_id
-  region                = var.region
-  service_name          = "logic-understanding-agent"
-  image                 = "${var.region}-docker.pkg.dev/${var.project_id}/financial-reports/logic-understanding-agent:latest"
-  service_account_email = google_service_account.cloud_run_sa.email
-  memory                = "2Gi"
-  cpu                   = "2"
-  max_instances         = 10
-  timeout               = 600
-  allow_unauthenticated = false
-
-  env_vars = {
-    PROJECT_ID = var.project_id
-    REGION     = var.region
+# Output information about deployment
+resource "null_resource" "deployment_info" {
+  triggers = {
+    always_run = timestamp()
   }
-
-  depends_on = [
-    google_project_service.required_apis,
-    google_service_account.cloud_run_sa,
-    google_project_iam_member.cloud_run_sa_roles
-  ]
-}
-
-module "visualization_agent" {
-  source = "./modules/cloudrun"
-
-  project_id            = var.project_id
-  region                = var.region
-  service_name          = "visualization-agent"
-  image                 = "${var.region}-docker.pkg.dev/${var.project_id}/financial-reports/visualization-agent:latest"
-  service_account_email = google_service_account.cloud_run_sa.email
-  memory                = "1Gi"
-  cpu                   = "2"
-  max_instances         = 15
-  allow_unauthenticated = false
-
-  env_vars = {
-    PROJECT_ID      = var.project_id
-    REGION          = var.region
-    STORAGE_BUCKET  = module.visualizations_storage.bucket_name
+  
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "=========================================="
+      echo "✅ Terraform deployment complete!"
+      echo "=========================================="
+      echo ""
+      echo "Cloud Run Services:"
+      echo "  Frontend:     ${module.cloud_run.frontend_url}"
+      echo "  Orchestrator: ${module.cloud_run.orchestrator_url}"
+      echo "  Report Reader: ${module.cloud_run.report_reader_url}"
+      echo "  Logic Understanding: ${module.cloud_run.logic_understanding_url}"
+      echo "  Visualization: ${module.cloud_run.visualization_url}"
+      echo ""
+      echo "Cloud Storage:"
+      echo "  Reports: ${module.storage.reports_bucket_name}"
+      echo "  Charts:  ${module.storage.charts_bucket_name}"
+      echo ""
+      echo "Pub/Sub Topics:"
+      echo "  Tasks:   ${module.pubsub.tasks_topic_name}"
+      echo "  Results: ${module.pubsub.results_topic_name}"
+      echo ""
+      echo "Cloud Build Triggers: ${var.github_connection != null ? "✅ Managed by Terraform" : "⚠️  Managed manually via Console"}"
+      echo ""
+      echo "=========================================="
+    EOT
   }
-
-  depends_on = [
-    google_project_service.required_apis,
-    google_service_account.cloud_run_sa,
-    google_project_iam_member.cloud_run_sa_roles,
-    module.visualizations_storage
-  ]
-}
-
-module "orchestrator_agent" {
-  source = "./modules/cloudrun"
-
-  project_id            = var.project_id
-  region                = var.region
-  service_name          = "orchestrator-agent"
-  image                 = "${var.region}-docker.pkg.dev/${var.project_id}/financial-reports/orchestrator-agent:latest"
-  service_account_email = google_service_account.cloud_run_sa.email
-  memory                = "1Gi"
-  cpu                   = "2"
-  max_instances         = 10
-  timeout               = 900
-  allow_unauthenticated = false
-
-  env_vars = {
-    PROJECT_ID           = var.project_id
-    REGION               = var.region
-    PUBSUB_TOPIC         = module.pubsub.topic_name
-    REPORT_READER_URL    = module.report_reader_agent.service_url
-    LOGIC_AGENT_URL      = module.logic_agent.service_url
-    VISUALIZATION_URL    = module.visualization_agent.service_url
-    DATABASE_URL         = "sqlite:///./orchestrator.db" # TODO: Change to Cloud SQL
-  }
-
-  depends_on = [
-    google_project_service.required_apis,
-    google_service_account.cloud_run_sa,
-    google_project_iam_member.cloud_run_sa_roles,
-    module.pubsub
-  ]
+  
+  depends_on = [module.cloud_run]
 }

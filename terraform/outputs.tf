@@ -70,11 +70,16 @@ output "artifact_registry_location" {
   value       = google_artifact_registry_repository.docker_repo.location
 }
 
-# ===== Cloud Build Triggers =====
+# ===== Cloud Build Triggers (optional) =====
 
 output "cloud_build_trigger_ids" {
-  description = "Cloud Build trigger IDs for each service"
-  value       = module.cloud_build.trigger_ids
+  description = "Cloud Build trigger IDs for each service (if managed by Terraform)"
+  value       = var.github_connection != null ? module.cloud_build[0].trigger_ids : null
+}
+
+output "cloud_build_managed" {
+  description = "Whether Cloud Build triggers are managed by Terraform"
+  value       = var.github_connection != null ? "✅ Managed by Terraform" : "⚠️  Managed manually via Console"
 }
 
 # ===== Quick Start Commands =====
@@ -112,15 +117,17 @@ output "quick_start_commands" {
   === Service Account ===
   Email: ${module.iam.service_account_email}
   
+  === Cloud Build Triggers ===
+  Status: ${var.github_connection != null ? "✅ Managed by Terraform" : "⚠️  Managed manually via Console (trigger: FRAI)"}
+  
   === Next Steps ===
-  1. Push code to GitHub main branch
+  1. ${var.github_connection != null ? "Push code to GitHub main branch" : "Test manual trigger 'FRAI' by pushing to GitHub"}
   2. Cloud Build will automatically build and deploy
   3. Run ./scripts/interactive_demo.sh to test
   4. Check logs: gcloud logging read --limit 50 --format json
   
   === Documentation ===
   User Guide:        docs/USER_GUIDE.md
-  OAuth Setup:       docs/GITHUB_OAUTH_SETUP.md
   Quick Start:       docs/QUICKSTART_USAGE.md
   
   Happy analyzing! 🚀📊
@@ -139,5 +146,6 @@ output "configuration_summary" {
     artifact_registry        = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker_repo.name}"
     enable_reasoning_engine  = var.enable_reasoning_engine
     enable_authentication    = var.enable_authentication
+    cloud_build_managed      = var.github_connection != null
   }
 }

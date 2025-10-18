@@ -1,14 +1,14 @@
 # Dockerfile for Visualization Agent
+# Generates charts and visualizations using matplotlib and plotly
+
 FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
 # Install system dependencies for visualization libraries
 RUN apt-get update && apt-get install -y \
     gcc \
-    g++ \
-    libfreetype6-dev \
-    libpng-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -18,12 +18,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port
+# Expose port 8080 (Cloud Run requirement)
 EXPOSE 8080
 
-# Set environment variables
+# Environment variables
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 
-# Run the application
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import requests; requests.get('http://localhost:8080/health')"
+
+# Run the application with uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Reports Analysis System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        .chat-message {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .error-banner {
+            animation: shake 0.5s;
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+    </style>
+</head>
+<body class="min-h-screen text-white p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <div class="mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                Financial Reports Analysis System
+            </h1>
+            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖</p>
+        </div>
+
+        <!-- Error Banner (hidden by default) -->
+        <div id="errorBanner" class="hidden error-banner bg-red-900/50 border-2 border-red-500 rounded-lg p-4 mb-6">
+            <div class="flex items-start gap-3">
+                <span class="text-2xl">⚠️</span>
+                <div class="flex-1">
+                    <h3 class="font-bold text-lg mb-1">Проблема обнаружена</h3>
+                    <div id="errorDetails" class="text-sm text-gray-300"></div>
+                    <div id="errorSolution" class="mt-2 text-sm bg-red-900/50 p-3 rounded"></div>
+                </div>
+                <button onclick="hideError()" class="text-gray-400 hover:text-white">✕</button>
+            </div>
+        </div>
+
+        <!-- Token Input -->
+        <div class="bg-gray-800 rounded-lg p-4 md:p-6 mb-6 border border-gray-700">
+            <label class="block text-sm font-medium mb-2">
+                🔐 Auth Token
+            </label>
+            <div class="text-xs text-gray-400 mb-2">
+                Получи через: <code class="bg-gray-900 px-2 py-1 rounded">gcloud auth print-identity-token</code>
+            </div>
+            <input
+                type="password"
+                id="tokenInput"
+                placeholder="Вставь токен сюда..."
+                class="w-full bg-gray-900 border border-gray-700 rounded px-4 py-2 text-white focus:border-blue-500 focus:outline-none"
+            />
+            <div id="tokenStatus" class="mt-2 text-sm hidden"></div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <!-- Left Column: Status & Upload -->
+            <div class="space-y-6">
+                <!-- Service Status -->
+                <div class="bg-gray-800 rounded-lg p-4 md:p-6 border border-gray-700">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="text-2xl">🏥</span>
+                        <h2 class="text-xl font-semibold">Статус</h2>
+                    </div>
+                    <button
+                        id="checkServicesBtn"
+                        class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded transition text-sm"
+                    >
+                        Проверить сервисы
+                    </button>
+                    <div id="servicesStatus" class="mt-4 space-y-2"></div>
+                </div>
+
+                <!-- File Upload -->
+                <div class="bg-gray-800 rounded-lg p-4 md:p-6 border border-gray-700">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="text-2xl">📤</span>
+                        <h2 class="text-xl font-semibold">Файл</h2>
+                    </div>
+                    <label class="w-full bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded transition flex items-center justify-center gap-2 cursor-pointer text-sm">
+                        📁 CSV / Excel
+                        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" class="hidden" />
+                    </label>
+                    <div id="uploadStatus" class="mt-4 hidden"></div>
+                </div>
+            </div>
+
+            <!-- Middle & Right Column: Chat -->
+            <div class="lg:col-span-2">
+                <div class="bg-gray-800 rounded-lg border border-gray-700 h-full flex flex-col">
+                    <!-- Chat Header -->
+                    <div class="p-4 border-b border-gray-700 flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <span class="text-2xl">💬</span>
+                            <h2 class="text-xl font-semibold">AI Ассистент</h2>
+                        </div>
+                        <button id="clearChatBtn" onclick="clearChat()" class="text-sm text-gray-400 hover:text-white">
+                            Очистить
+                        </button>
+                    </div>
+
+                    <!-- Chat Messages -->
+                    <div id="chatMessages" class="flex-1 p-4 space-y-4 overflow-y-auto" style="min-height: 400px; max-height: 500px;">
+                        <div class="text-center text-gray-400 py-8">
+                            <div class="text-4xl mb-2">🤖</div>
+                            <div class="text-sm">Привет! Я помогу проанализировать финансовые отчёты.</div>
+                            <div class="text-xs mt-2 text-gray-500">Загрузи файл и задай вопрос</div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div class="p-4 border-t border-gray-700">
+                        <div class="flex gap-2">
+                            <input
+                                type="text"
+                                id="chatInput"
+                                placeholder="Напиши вопрос..."
+                                class="flex-1 bg-gray-900 border border-gray-700 rounded px-4 py-2 text-white focus:border-blue-500 focus:outline-none"
+                                onkeypress="if(event.key==='Enter') sendMessage()"
+                            />
+                            <button
+                                id="sendBtn"
+                                onclick="sendMessage()"
+                                class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-medium px-6 py-2 rounded transition"
+                            >
+                                ➤
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs Console -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700">
+            <div class="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-750" onclick="toggleLogs()">
+                <div class="flex items-center gap-3">
+                    <span class="text-2xl">💻</span>
+                    <h2 class="text-xl font-semibold">Консоль логов</h2>
+                    <span class="text-sm text-gray-400">(<span id="logCount">0</span>)</span>
+                </div>
+                <button id="toggleLogsBtn" class="text-gray-400 hover:text-white">▼</button>
+            </div>
+            <div id="logsContainer" class="p-4 pt-0">
+                <div id="logsContent" class="bg-gray-900 rounded p-4 max-h-96 overflow-auto space-y-1 font-mono text-sm">
+                    <div class="text-gray-500 text-sm">Логов пока нет...</div>
+                </div>
+                <button onclick="clearLogs()" class="mt-3 text-sm text-gray-400 hover:text-white">
+                    Очистить логи
+                </button>
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="mt-6 bg-blue-900/20 border border-blue-800 rounded-lg p-4 text-sm">
+            <h3 class="font-semibold mb-2">📝 Инструкция:</h3>
+            <ol class="text-gray-300 space-y-1 list-decimal list-inside">
+                <li>Получи токен: <code class="bg-gray-800 px-2 py-1 rounded text-xs">gcloud auth print-identity-token</code></li>
+                <li>Вставь токен в поле выше ☝️</li>
+                <li>Проверь статус сервисов</li>
+                <li>Загрузи CSV или Excel файл 📊</li>
+                <li>Задавай вопросы в чате 💬</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'https://frontend-service-38390150695.us-central1.run.app';
+        let logs = [];
+        let uploadedFile = null;
+        let conversationId = null;
+        let logsExpanded = true;
+
+        // ==================== Logging ====================
+        function addLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            logs.push({ timestamp, message, type });
+            
+            const colors = {
+                info: 'text-blue-400',
+                success: 'text-green-400',
+                error: 'text-red-400',
+                warning: 'text-yellow-400'
+            };
+            
+            const logsContent = document.getElementById('logsContent');
+            if (logs.length === 1) logsContent.innerHTML = '';
+            
+            const logEntry = document.createElement('div');
+            logEntry.className = colors[type];
+            logEntry.innerHTML = `<span class="text-gray-500">[${timestamp}]</span> ${message}`;
+            logsContent.appendChild(logEntry);
+            
+            document.getElementById('logCount').textContent = logs.length;
+            logsContent.scrollTop = logsContent.scrollHeight;
+            
+            console.log(`[${type.toUpperCase()}] ${timestamp}: ${message}`);
+        }
+
+        function clearLogs() {
+            logs = [];
+            document.getElementById('logsContent').innerHTML = '<div class="text-gray-500 text-sm">Логов пока нет...</div>';
+            document.getElementById('logCount').textContent = '0';
+        }
+
+        function toggleLogs() {
+            logsExpanded = !logsExpanded;
+            document.getElementById('logsContainer').style.display = logsExpanded ? 'block' : 'none';
+            document.getElementById('toggleLogsBtn').textContent = logsExpanded ? '▼' : '▶';
+        }
+
+        // ==================== Error Handling ====================
+        function showError(component, code, details, solution) {
+            const banner = document.getElementById('errorBanner');
+            document.getElementById('errorDetails').innerHTML = `
+                <div><strong>Компонент:</strong> ${component}</div>
+                <div><strong>Код ошибки:</strong> ${code}</div>
+                <div class="mt-1">${details}</div>
+            `;
+            document.getElementById('errorSolution').innerHTML = `
+                <div class="font-semibold mb-1">💡 Решение:</div>
+                <div>${solution}</div>
+            `;
+            banner.classList.remove('hidden');
+        }
+
+        function hideError() {
+            document.getElementById('errorBanner').classList.add('hidden');
+        }
+
+        function diagnoseError(error, context = '') {
+            if (error.includes('401') || error.includes('403') || error.includes('Forbidden')) {
+                showError(
+                    context || 'API',
+                    'HTTP 403',
+                    'Токен истёк или неверный',
+                    '1. Выполни: <code class="bg-gray-900 px-2 py-1 rounded">gcloud auth print-identity-token</code><br>2. Скопируй новый токен<br>3. Вставь в поле "Auth Token"'
+                );
+            } else if (error.includes('503') || error.includes('unavailable')) {
+                showError(
+                    context || 'Сервис',
+                    'HTTP 503',
+                    'Сервис временно недоступен',
+                    'Проверь статус сервисов в GCP Console или подожди несколько минут'
+                );
+            } else if (error.includes('timeout') || error.includes('000')) {
+                showError(
+                    context || 'Сеть',
+                    'Connection Error',
+                    'Не удалось подключиться к серверу',
+                    'Проверь подключение к интернету и убедись что сервисы запущены'
+                );
+            } else {
+                showError(
+                    context || 'Система',
+                    'Неизвестная ошибка',
+                    error,
+                    'Проверь логи ниже для подробностей'
+                );
+            }
+        }
+
+        function getToken() {
+            const token = document.getElementById('tokenInput').value.trim();
+            if (!token) {
+                addLog('Ошибка: Токен не установлен', 'error');
+                diagnoseError('Токен не установлен', 'Auth');
+                return null;
+            }
+            return token;
+        }
+
+        // ==================== Token ====================
+        document.getElementById('tokenInput').addEventListener('input', (e) => {
+            const status = document.getElementById('tokenStatus');
+            if (e.target.value.trim()) {
+                status.textContent = '✅ Токен установлен';
+                status.className = 'mt-2 text-green-400 text-sm';
+                status.classList.remove('hidden');
+                hideError();
+            } else {
+                status.classList.add('hidden');
+            }
+        });
+
+        // ==================== Services Check ====================
+        document.getElementById('checkServicesBtn').addEventListener('click', async () => {
+            const token = getToken();
+            if (!token) return;
+
+            addLog('Проверка статуса сервисов...', 'info');
+            const btn = document.getElementById('checkServicesBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Проверка...';
+
+            const serviceUrls = {
+                frontend: 'https://frontend-service-38390150695.us-central1.run.app',
+                orchestrator: 'https://orchestrator-agent-38390150695.us-central1.run.app',
+                reader: 'https://report-reader-agent-38390150695.us-central1.run.app',
+                logic: 'https://logic-understanding-agent-38390150695.us-central1.run.app',
+                visualization: 'https://visualization-agent-38390150695.us-central1.run.app'
+            };
+
+            const statusDiv = document.getElementById('servicesStatus');
+            statusDiv.innerHTML = '';
+
+            for (const [name, url] of Object.entries(serviceUrls)) {
+                try {
+                    const response = await fetch(`${url}/health`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    
+                    const statusItem = document.createElement('div');
+                    statusItem.className = 'flex items-center justify-between bg-gray-900 p-2 rounded text-sm';
+                    
+                    if (response.ok) {
+                        statusItem.innerHTML = `<span class="capitalize">${name}</span><span class="text-green-400">✅ healthy</span>`;
+                        addLog(`✅ ${name}: healthy`, 'success');
+                    } else {
+                        statusItem.innerHTML = `<span class="capitalize">${name}</span><span class="text-red-400">❌ HTTP ${response.status}</span>`;
+                        addLog(`❌ ${name}: HTTP ${response.status}`, 'error');
+                    }
+                    statusDiv.appendChild(statusItem);
+                } catch (error) {
+                    const statusItem = document.createElement('div');
+                    statusItem.className = 'flex items-center justify-between bg-gray-900 p-2 rounded text-sm';
+                    statusItem.innerHTML = `<span class="capitalize">${name}</span><span class="text-red-400">❌ error</span>`;
+                    statusDiv.appendChild(statusItem);
+                    addLog(`❌ ${name}: ${error.message}`, 'error');
+                }
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Проверить сервисы';
+            addLog('Проверка завершена', 'success');
+        });
+
+        // ==================== File Upload ====================
+        document.getElementById('fileInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const token = getToken();
+            if (!token) return;
+
+            addLog(`Загрузка файла: ${file.name}`, 'info');
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    uploadedFile = data;
+                    addLog(`✅ Файл загружен: ${data.file_id}`, 'success');
+                    
+                    const statusDiv = document.getElementById('uploadStatus');
+                    statusDiv.innerHTML = `
+                        <div class="bg-gray-900 p-3 rounded">
+                            <div class="text-green-400 text-sm mb-1">✅ ${file.name}</div>
+                            <div class="text-xs text-gray-400">ID: ${data.file_id}</div>
+                        </div>
+                    `;
+                    statusDiv.classList.remove('hidden');
+                    
+                    // Add welcome message to chat
+                    addChatMessage('ai', `Файл "${file.name}" загружен! Теперь можешь задавать вопросы по этому отчёту.`);
+                } else {
+                    const error = await response.text();
+                    addLog(`❌ Ошибка загрузки: HTTP ${response.status}`, 'error');
+                    addLog(`Детали: ${error}`, 'error');
+                    diagnoseError(error, 'File Upload');
+                }
+            } catch (error) {
+                addLog(`❌ Ошибка: ${error.message}`, 'error');
+                diagnoseError(error.message, 'File Upload');
+            }
+        });
+
+        // ==================== Chat ====================
+        function addChatMessage(role, message) {
+            const messagesDiv = document.getElementById('chatMessages');
+            
+            // Remove welcome message if it exists
+            const welcome = messagesDiv.querySelector('.text-center');
+            if (welcome) welcome.remove();
+            
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `chat-message flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            
+            msgDiv.innerHTML = `
+                <div class="max-w-[80%] ${role === 'user' ? 'bg-blue-600' : 'bg-gray-700'} rounded-lg p-3">
+                    <div class="text-xs text-gray-300 mb-1">${role === 'user' ? 'Ты' : '🤖 AI'}</div>
+                    <div class="text-sm whitespace-pre-wrap">${message}</div>
+                </div>
+            `;
+            
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            const token = getToken();
+            if (!token) return;
+            
+            // Add user message
+            addChatMessage('user', message);
+            addLog(`Отправлен вопрос: ${message}`, 'info');
+            input.value = '';
+            
+            // Show loading
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            sendBtn.textContent = '⏳';
+            
+            try {
+                const response = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        file_id: uploadedFile?.file_id,
+                        conversation_id: conversationId
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    conversationId = data.conversation_id;
+                    
+                    addChatMessage('ai', data.response);
+                    addLog('✅ Получен ответ от AI', 'success');
+                } else {
+                    const error = await response.text();
+                    addLog(`❌ Ошибка: HTTP ${response.status}`, 'error');
+                    addChatMessage('ai', `Извини, произошла ошибка: ${error}`);
+                    diagnoseError(error, 'Chat');
+                }
+            } catch (error) {
+                addLog(`❌ Ошибка: ${error.message}`, 'error');
+                addChatMessage('ai', `Извини, не могу подключиться к серверу: ${error.message}`);
+                diagnoseError(error.message, 'Chat');
+            }
+            
+            sendBtn.disabled = false;
+            sendBtn.textContent = '➤';
+        }
+
+        function clearChat() {
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = `
+                <div class="text-center text-gray-400 py-8">
+                    <div class="text-4xl mb-2">🤖</div>
+                    <div class="text-sm">Чат очищен. Задай новый вопрос!</div>
+                </div>
+            `;
+            conversationId = null;
+            addLog('Чат очищен', 'info');
+        }
+
+        // ==================== Initialize ====================
+        addLog('Приложение запущено', 'success');
+        addLog('⚠️ Для работы требуется токен аутентификации', 'warning');
+    </script>
+</body>
+</html>

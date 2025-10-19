@@ -1,307 +1,243 @@
-# 🚀 GCP Deployment Guide
-
-## ✅ Что готово
-
-Terraform модули созданы и готовы:
-- ✅ Cloud Run module
-- ✅ Pub/Sub module
-- ✅ Storage module
-- ✅ Main terraform configuration
-- ✅ Build & Push script
-- ✅ Complete deployment script
+# 🚀 Deployment Guide - Session 9
+**Цель:** Собрать все 5 Docker образов и задеплоить в Cloud Run
 
 ---
 
-## 📋 Предварительные требования
+## ✅ Предварительные требования
 
-### 1. Установить Google Cloud SDK
+- [x] Cloud Build триггер "FRAI" настроен
+- [x] Service Account с необходимыми permissions
+- [x] Artifact Registry репозиторий создан
+- [x] frontend-service образ уже собран (проверка работоспособности)
 
+---
+
+## 🎯 Вариант A: Автоматический Deploy (Рекомендуется!)
+
+### Шаг 1: Запустить скрипт
 ```bash
-# Mac
-brew install --cask google-cloud-sdk
-
-# Или скачать с https://cloud.google.com/sdk/docs/install
+# Скачать и запустить скрипт
+chmod +x deploy_all_agents.sh
+./deploy_all_agents.sh
 ```
 
-### 2. Установить Docker
+Скрипт выполнит:
+1. ✅ Обновит триггер на `cloudbuild.yaml`
+2. 🔨 Запустит сборку всех 5 агентов (~10-15 минут)
+3. 🔍 Проверит образы в Artifact Registry
+4. 🚢 Задеплоит все сервисы в Cloud Run
 
+### Ожидаемое время выполнения
+- Обновление триггера: ~5 секунд
+- Сборка образов: ~10-15 минут
+- Deploy всех сервисов: ~5 минут
+- **Общее время: ~20 минут**
+
+---
+
+## 🎯 Вариант B: Пошаговый Deploy (для контроля)
+
+### Шаг 1: Обновить Cloud Build триггер
 ```bash
-# Проверь что Docker запущен
-docker --version
-
-# Если нет - установи Docker Desktop
-# https://www.docker.com/products/docker-desktop
+gcloud builds triggers update FRAI \
+  --region=global \
+  --build-config=cloudbuild.yaml \
+  --project=financial-reports-ai-2024
 ```
 
-### 3. Установить Terraform
-
+### Шаг 2: Запустить сборку образов
 ```bash
-# Mac
-brew install terraform
+# Вариант 2a: Через триггер
+gcloud builds triggers run FRAI \
+  --branch=main \
+  --region=global \
+  --project=financial-reports-ai-2024
 
-# Проверь
-terraform --version
+# Вариант 2b: Через git push (проще!)
+git add .
+git commit -m "Build all 5 agents"
+git push origin main
+```
+
+### Шаг 3: Мониторинг сборки
+```bash
+# Посмотреть последние builds
+gcloud builds list --limit=1 --project=financial-reports-ai-2024
+
+# Стримить логи build (замените BUILD_ID)
+gcloud builds log <BUILD_ID> --stream
+```
+
+### Шаг 4: Проверить образы
+```bash
+gcloud artifacts docker images list \
+  us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports \
+  --include-tags
+```
+
+Должно быть **5 образов**:
+- ✅ frontend-service:latest
+- ✅ orchestrator-agent:latest
+- ✅ report-reader-agent:latest
+- ✅ logic-understanding-agent:latest
+- ✅ visualization-agent:latest
+
+### Шаг 5: Deploy в Cloud Run
+```bash
+# Frontend Service
+gcloud run deploy frontend-service \
+  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/frontend-service:latest \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --memory=2Gi \
+  --cpu=2
+
+# Orchestrator Agent
+gcloud run deploy orchestrator-agent \
+  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/orchestrator-agent:latest \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --memory=2Gi \
+  --cpu=2
+
+# Report Reader Agent
+gcloud run deploy report-reader-agent \
+  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/report-reader-agent:latest \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --memory=2Gi \
+  --cpu=2
+
+# Logic Understanding Agent
+gcloud run deploy logic-understanding-agent \
+  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/logic-understanding-agent:latest \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --memory=2Gi \
+  --cpu=2
+
+# Visualization Agent
+gcloud run deploy visualization-agent \
+  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/visualization-agent:latest \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --memory=2Gi \
+  --cpu=2
 ```
 
 ---
 
-## 🎯 Деплой (Автоматический)
-
-### Вариант 1: Полный автоматический деплой
-
-```bash
-cd /Users/sergejbykov/financial-reports-system
-
-# Дай права на выполнение
-chmod +x scripts/deploy_gcp.sh
-
-# Запусти деплой
-./scripts/deploy_gcp.sh
-```
-
-**Скрипт выполнит:**
-1. Настройку GCP проекта
-2. Включение нужных API
-3. Сборку всех Docker образов
-4. Загрузку в Container Registry
-5. Terraform init/plan/apply
-6. Деплой всех 5 агентов
-
-**Время:** ~20-30 минут
-
----
-
-## 🎯 Деплой (Пошаговый)
-
-### Шаг 1: Настрой GCP
-
-```bash
-# Войди в GCP
-gcloud auth login
-
-# Установи проект
-gcloud config set project financial-reports-ai-2024
-
-# Создай проект если нет
-# gcloud projects create financial-reports-ai-2024 --name="Financial Reports System"
-
-# Включи биллинг (через веб-консоль)
-# https://console.cloud.google.com/billing
-```
-
-### Шаг 2: Включи API
-
-```bash
-gcloud services enable \
-  run.googleapis.com \
-  cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com \
-  pubsub.googleapis.com \
-  storage.googleapis.com \
-  aiplatform.googleapis.com
-```
-
-### Шаг 3: Собери и загрузи образы
-
-```bash
-cd /Users/sergejbykov/financial-reports-system
-
-# Дай права
-chmod +x scripts/build_and_push.sh
-
-# Запусти
-./scripts/build_and_push.sh financial-reports-ai-2024 us-central1
-```
-
-Это займёт **10-15 минут** (собираем 5 Docker образов)
-
-### Шаг 4: Задеплой через Terraform
+## 🎯 Вариант C: Через Terraform
 
 ```bash
 cd terraform
-
-# Инициализируй
-terraform init
-
-# Проверь план
-terraform plan -var="project_id=financial-reports-ai-2024"
-
-# Задеплой
-terraform apply -var="project_id=financial-reports-ai-2024" -auto-approve
-```
-
-Это займёт **5-10 минут**
-
-### Шаг 5: Проверь результат
-
-```bash
-# Получи URLs сервисов
-terraform output
-
-# Проверь Frontend
-curl $(terraform output -raw frontend_url)/health
-
-# Проверь в консоли
-gcloud run services list
+terraform plan
+terraform apply
 ```
 
 ---
 
-## 💰 Стоимость
+## 📊 Проверка результатов
 
-### Ожидаемые расходы:
+### 1. Проверить Cloud Run сервисы
+```bash
+gcloud run services list --region=us-central1
+```
 
-**Dev окружение (минимальная нагрузка):**
-- Cloud Run: $5-10/месяц
-- Storage: $1-2/месяц
-- Pub/Sub: $1-2/месяц
-- Vertex AI: $10-20/месяц (за запросы к Gemini)
-- **ИТОГО: ~$20-35/месяц**
+Должно быть **5 сервисов** со статусом `Ready`.
 
-**Production (средняя нагрузка):**
-- Cloud Run: $50-100/месяц
-- Storage: $10-20/месяц
-- Pub/Sub: $10-20/месяц
-- Vertex AI: $100-300/месяц
-- **ИТОГО: ~$200-500/месяц**
+### 2. Получить URLs всех сервисов
+```bash
+gcloud run services list \
+  --region=us-central1 \
+  --format='table(SERVICE,URL)' \
+  --project=financial-reports-ai-2024
+```
+
+### 3. Протестировать каждый сервис
+```bash
+# Frontend
+curl https://frontend-service-<hash>-uc.a.run.app/health
+
+# Orchestrator
+curl https://orchestrator-agent-<hash>-uc.a.run.app/health
+
+# Остальные аналогично...
+```
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Проблема: Docker not found
+### Build не запускается
 ```bash
-# Установи Docker Desktop
-brew install --cask docker
-# Запусти Docker Desktop
+# Проверить статус триггера
+gcloud builds triggers describe FRAI --region=global
+
+# Проверить permissions
+gcloud projects get-iam-policy financial-reports-ai-2024 \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:financial-reports-sa@*"
 ```
 
-### Проблема: Permission denied
+### Образы не появляются в Registry
 ```bash
-# Дай права на скрипты
-chmod +x scripts/*.sh
+# Проверить логи build
+gcloud builds list --limit=5
+gcloud builds log <BUILD_ID>
+
+# Проверить permissions на Artifact Registry
+gcloud artifacts repositories get-iam-policy financial-reports \
+  --location=us-central1
 ```
 
-### Проблема: gcloud not found
+### Cloud Run deploy fails
 ```bash
-# Установи gcloud SDK
-brew install --cask google-cloud-sdk
+# Проверить, что образ существует
+gcloud artifacts docker images describe \
+  us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/frontend-service:latest
+
+# Проверить квоты
+gcloud compute project-info describe --project=financial-reports-ai-2024
 ```
 
-### Проблема: Terraform apply failed
+### Проблемы с сетью/доступом
 ```bash
-# Проверь что все API включены
-gcloud services list --enabled
+# Проверить VPC connector (если используется)
+gcloud compute networks vpc-access connectors list --region=us-central1
 
-# Проверь что есть права
-gcloud auth list
-```
-
-### Проблема: API not enabled
-```bash
-# Включи API вручную в консоли
-# https://console.cloud.google.com/apis/library
-```
-
----
-
-## 🎯 После деплоя
-
-### Проверь все сервисы:
-
-```bash
-# Frontend
-curl https://frontend-service-xxx.run.app/health
-
-# Orchestrator
-curl https://orchestrator-agent-xxx.run.app/health
-
-# Report Reader
-curl https://report-reader-agent-xxx.run.app/health
-
-# Logic Agent
-curl https://logic-understanding-agent-xxx.run.app/health
-
-# Visualization
-curl https://visualization-agent-xxx.run.app/health
-```
-
-### Тестовый запрос:
-
-```bash
-FRONTEND_URL=$(cd terraform && terraform output -raw frontend_url)
-
-curl -X POST $FRONTEND_URL/analyze \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Test analysis",
-    "use_voice_response": false
-  }'
+# Проверить Cloud Run permissions
+gcloud run services get-iam-policy frontend-service --region=us-central1
 ```
 
 ---
 
-## 📊 Мониторинг
+## 📝 Важные заметки
 
-### Cloud Console:
-- **Cloud Run**: https://console.cloud.google.com/run
-- **Logs**: https://console.cloud.google.com/logs
-- **Monitoring**: https://console.cloud.google.com/monitoring
-
-### Команды:
-
-```bash
-# Логи сервиса
-gcloud run services logs read frontend-service --limit=50
-
-# Метрики
-gcloud run services describe frontend-service
-
-# Статус
-gcloud run services list
-```
+1. **Последовательная сборка:** `cloudbuild.yaml` собирает агенты последовательно для экономии ресурсов
+2. **Timeout:** Build может занять до 15 минут
+3. **Машина:** Используется `E2_HIGHCPU_8` для быстрой сборки
+4. **Теги:** Каждый образ тегируется и с `latest` и с `SHORT_SHA`
+5. **Cloud Run:** Каждый сервис получает 2GB RAM и 2 CPU
 
 ---
 
-## 🗑️ Удаление (если нужно)
+## ✅ Критерии успеха
 
-```bash
-cd terraform
-
-# Удали всё
-terraform destroy -var="project_id=financial-reports-ai-2024" -auto-approve
-
-# Или удали вручную
-gcloud run services delete frontend-service --region=us-central1
-gcloud run services delete orchestrator-agent --region=us-central1
-# ... и так далее
-```
+- [ ] Все 5 Docker образов собраны в Artifact Registry
+- [ ] Все 5 сервисов задеплоены в Cloud Run
+- [ ] Все сервисы отвечают на `/health` endpoint
+- [ ] URLs всех сервисов доступны
 
 ---
 
-## 🎊 Готово!
+## 🎉 После успешного deploy
 
-После успешного деплоя у тебя будет:
-
-✅ 5 агентов в Cloud Run  
-✅ Pub/Sub для коммуникации  
-✅ Storage для файлов и графиков  
-✅ Автоматический скейлинг  
-✅ HTTPS endpoints  
-✅ Мониторинг и логи  
-
-**Проект готов к использованию! 🚀**
+1. Обновить `SESSION_9_STATUS.md` с новыми URLs
+2. Протестировать взаимодействие между агентами
+3. Настроить мониторинг и алерты
+4. Добавить CI/CD для автоматических деплоев
 
 ---
 
-## 📝 Следующие шаги
-
-1. **Настрой CI/CD** (GitHub Actions)
-2. **Добавь мониторинг** (Cloud Monitoring dashboards)
-3. **Настрой алерты** (email/Slack уведомления)
-4. **Добавь кастомный домен** (если нужно)
-5. **Настрой Cloud SQL** (вместо SQLite для Orchestrator)
-
----
-
-**Удачи с деплоем! 🎉**
+**Последнее обновление:** 19 октября 2025

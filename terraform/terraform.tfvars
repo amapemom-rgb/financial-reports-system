@@ -45,7 +45,7 @@ enable_reasoning_engine   = true
 reasoning_engine_location = "us-central1"
 
 # Security configuration
-enable_authentication = true
+enable_authentication = false
 allowed_cors_origins  = ["*"]
 
 # Service account configuration

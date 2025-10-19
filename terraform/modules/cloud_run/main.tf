@@ -71,11 +71,6 @@ resource "google_cloud_run_v2_service" "services" {
         value = each.value.name
       }
 
-      env {
-        name  = "PORT"
-        value = "8080"
-      }
-
       ports {
         container_port = 8080
       }

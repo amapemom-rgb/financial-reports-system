@@ -279,8 +279,9 @@ class FinancialAnalystAgent:
                 )
             ])
             
-            search_tool = Tool.from_google_search_retrieval(
-                google_search_retrieval=grounding.GoogleSearchRetrieval()
+            # Use new Google Search API (not google_search_retrieval)
+            search_tool = Tool.from_google_search(
+                google_search=grounding.GoogleSearch()
             )
             
             self.agent = GenerativeModel(

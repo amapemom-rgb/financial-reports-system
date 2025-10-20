@@ -25,7 +25,7 @@ resource "google_pubsub_topic" "results_topic" {
   }
 }
 
-# Subscription for orchestrator to receive task updates
+# Subscription for orchestrator to receive task updates (PUSH to Cloud Run)
 resource "google_pubsub_subscription" "orchestrator_tasks_sub" {
   name  = "orchestrator-tasks-sub"
   topic = google_pubsub_topic.tasks_topic.name
@@ -34,6 +34,15 @@ resource "google_pubsub_subscription" "orchestrator_tasks_sub" {
 
   message_retention_duration = "604800s"
   retain_acked_messages      = false
+
+  # Push configuration to Cloud Run orchestrator
+  push_config {
+    push_endpoint = "${var.orchestrator_url}/pubsub/push"
+    
+    oidc_token {
+      service_account_email = var.service_account_email
+    }
+  }
 
   expiration_policy {
     ttl = "" # Never expire

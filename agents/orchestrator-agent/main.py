@@ -1,11 +1,12 @@
-"""Orchestrator Agent - Workflow Coordination & State Machine"""
+"""Orchestrator Agent - Workflow Coordination & State Machine with Pub/Sub Push"""
 import os
 import json
 import uuid
+import base64
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from enum import Enum
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, DateTime, JSON, Enum as SQLEnum
 from sqlalchemy.ext.declarative import declarative_base
@@ -29,15 +30,16 @@ LOGIC_AGENT_URL = os.getenv("LOGIC_AGENT_URL", "http://logic-understanding-agent
 VISUALIZATION_URL = os.getenv("VISUALIZATION_URL", "http://visualization-agent:8083")
 
 # Pub/Sub
-PUBSUB_TOPIC = os.getenv("PUBSUB_TOPIC", "task-queue-topic")
+TASKS_TOPIC = os.getenv("TASKS_TOPIC", "financial-reports-tasks")
+RESULTS_TOPIC = os.getenv("RESULTS_TOPIC", "financial-reports-results")
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./orchestrator.db")
 
-# Initialize Pub/Sub
+# Initialize Pub/Sub Publisher (for sending results)
 try:
     publisher = pubsub_v1.PublisherClient()
-    topic_path = publisher.topic_path(PROJECT_ID, PUBSUB_TOPIC)
+    results_topic_path = publisher.topic_path(PROJECT_ID, RESULTS_TOPIC)
     pubsub_available = True
 except Exception as e:
     print(f"Warning: Pub/Sub not available: {e}")
@@ -122,6 +124,11 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class PubSubMessage(BaseModel):
+    """Pub/Sub Push message format"""
+    message: Dict[str, Any]
+    subscription: str
+
 # ==========================================
 # Database Functions
 # ==========================================
@@ -133,9 +140,11 @@ def get_db():
     finally:
         db.close()
 
-def create_task(db: Session, workflow_type: WorkflowType, input_data: Dict) -> Task:
+def create_task(db: Session, workflow_type: WorkflowType, input_data: Dict, task_id: str = None) -> Task:
     """Create new task"""
-    task_id = f"task_{uuid.uuid4().hex[:12]}"
+    if not task_id:
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+    
     task = Task(
         id=task_id,
         workflow_type=workflow_type.value,
@@ -278,6 +287,17 @@ async def execute_analyze_report_workflow(task_id: str, input_data: Dict, db: Se
         }
         
         update_task_status(db, task_id, TaskStatus.COMPLETED, output_data=output)
+        
+        # Publish result to Pub/Sub
+        if pubsub_available:
+            result_message = {
+                "task_id": task_id,
+                "status": "completed",
+                "output": output
+            }
+            message_json = json.dumps(result_message)
+            message_bytes = message_json.encode('utf-8')
+            publisher.publish(results_topic_path, message_bytes)
     
     except Exception as e:
         update_task_status(db, task_id, TaskStatus.FAILED, error=str(e))
@@ -353,9 +373,61 @@ async def health():
         }
     }
 
+@app.post("/pubsub/push")
+async def receive_pubsub_push(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive Pub/Sub Push messages
+    This endpoint is called by Google Cloud Pub/Sub
+    """
+    try:
+        # Parse incoming message
+        envelope = await request.json()
+        
+        if not envelope:
+            raise HTTPException(status_code=400, detail="No message received")
+        
+        # Extract and decode the message
+        pubsub_message = envelope.get('message')
+        if not pubsub_message:
+            raise HTTPException(status_code=400, detail="Invalid message format")
+        
+        # Decode base64 data
+        message_data = base64.b64decode(pubsub_message.get('data', '')).decode('utf-8')
+        task_data = json.loads(message_data)
+        
+        print(f"Received Pub/Sub message: {task_data}")
+        
+        # Extract task information
+        task_id = task_data.get("task_id")
+        workflow_type_str = task_data.get("workflow_type", "analyze_report")
+        
+        try:
+            workflow_type = WorkflowType(workflow_type_str)
+        except ValueError:
+            workflow_type = WorkflowType.ANALYZE_REPORT
+        
+        # Create task in database
+        db = next(get_db())
+        task = create_task(db, workflow_type, task_data, task_id=task_id)
+        
+        # Execute workflow in background
+        executor = WORKFLOW_EXECUTORS.get(workflow_type)
+        if executor:
+            background_tasks.add_task(executor, task.id, task_data, db)
+        else:
+            raise HTTPException(status_code=400, detail="Unknown workflow type")
+        
+        # Return 204 No Content (success for Pub/Sub)
+        return {"status": "accepted", "task_id": task_id}
+    
+    except Exception as e:
+        print(f"Error processing Pub/Sub message: {str(e)}")
+        # Still return 200 to acknowledge message (prevents redelivery)
+        return {"status": "error", "message": str(e)}
+
 @app.post("/tasks", response_model=TaskResponse)
 async def create_task_endpoint(request: CreateTaskRequest, background_tasks: BackgroundTasks):
-    """Create new task and start workflow"""
+    """Create new task and start workflow (REST API alternative)"""
     db = next(get_db())
     
     try:

@@ -53,15 +53,6 @@ module "storage" {
   depends_on = [google_project_service.required_apis]
 }
 
-# Pub/Sub module for async messaging
-module "pubsub" {
-  source = "./modules/pubsub"
-  
-  project_id = var.project_id
-  
-  depends_on = [google_project_service.required_apis]
-}
-
 # IAM module for service accounts and permissions
 module "iam" {
   source = "./modules/iam"
@@ -70,6 +61,50 @@ module "iam" {
   region     = var.region
   
   depends_on = [google_project_service.required_apis]
+}
+
+# Cloud Run services module
+module "cloud_run" {
+  source = "./modules/cloud_run"
+  
+  project_id            = var.project_id
+  region                = var.region
+  artifact_repo_name    = google_artifact_registry_repository.docker_repo.name
+  service_account_email = module.iam.service_account_email
+  
+  # Environment variables for services
+  env_vars = {
+    PROJECT_ID                = var.project_id
+    REGION                    = var.region
+    REPORTS_BUCKET           = module.storage.reports_bucket_name
+    CHARTS_BUCKET            = module.storage.charts_bucket_name
+    TASKS_TOPIC              = "financial-reports-tasks"
+    RESULTS_TOPIC            = "financial-reports-results"
+    GEMINI_MODEL             = var.gemini_model
+    LOG_LEVEL                = var.log_level
+    ENABLE_REASONING_ENGINE  = var.enable_reasoning_engine ? "true" : "false"
+  }
+  
+  depends_on = [
+    google_project_service.required_apis,
+    module.iam,
+    module.storage,
+    google_artifact_registry_repository.docker_repo
+  ]
+}
+
+# Pub/Sub module for async messaging (depends on Cloud Run for push endpoint)
+module "pubsub" {
+  source = "./modules/pubsub"
+  
+  project_id            = var.project_id
+  orchestrator_url      = module.cloud_run.orchestrator_url
+  service_account_email = module.iam.service_account_email
+  
+  depends_on = [
+    google_project_service.required_apis,
+    module.cloud_run
+  ]
 }
 
 # Cloud Build triggers module (OPTIONAL - only if github_connection provided)
@@ -88,37 +123,6 @@ module "cloud_build" {
   
   depends_on = [
     google_project_service.required_apis,
-    google_artifact_registry_repository.docker_repo
-  ]
-}
-
-# Cloud Run services module
-module "cloud_run" {
-  source = "./modules/cloud_run"
-  
-  project_id            = var.project_id
-  region                = var.region
-  artifact_repo_name    = google_artifact_registry_repository.docker_repo.name
-  service_account_email = module.iam.service_account_email
-  
-  # Environment variables for services
-  env_vars = {
-    PROJECT_ID                = var.project_id
-    REGION                    = var.region
-    REPORTS_BUCKET           = module.storage.reports_bucket_name
-    CHARTS_BUCKET            = module.storage.charts_bucket_name
-    TASKS_TOPIC              = module.pubsub.tasks_topic_name
-    RESULTS_TOPIC            = module.pubsub.results_topic_name
-    GEMINI_MODEL             = var.gemini_model
-    LOG_LEVEL                = var.log_level
-    ENABLE_REASONING_ENGINE  = var.enable_reasoning_engine ? "true" : "false"
-  }
-  
-  depends_on = [
-    google_project_service.required_apis,
-    module.iam,
-    module.storage,
-    module.pubsub,
     google_artifact_registry_repository.docker_repo
   ]
 }
@@ -156,5 +160,5 @@ resource "null_resource" "deployment_info" {
     EOT
   }
   
-  depends_on = [module.cloud_run]
+  depends_on = [module.cloud_run, module.pubsub]
 }

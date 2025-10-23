@@ -1,4 +1,4 @@
-"""Report Reader Agent - Excel & Google Sheets Parser"""
+"""Report Reader Agent - Excel & Google Sheets Parser with Cloud Storage"""
 import os
 import io
 from typing import Dict, List, Any, Optional
@@ -8,6 +8,7 @@ import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google.cloud import storage
 
 app = FastAPI(title="Report Reader Agent")
 
@@ -16,7 +17,17 @@ app = FastAPI(title="Report Reader Agent")
 # ==========================================
 
 PROJECT_ID = os.getenv("PROJECT_ID", "financial-reports-ai-2024")
+REPORTS_BUCKET = os.getenv("REPORTS_BUCKET", "financial-reports-ai-2024-reports")
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "/secrets/google-credentials.json")
+
+# Initialize Cloud Storage client
+try:
+    storage_client = storage.Client()
+    storage_available = True
+except Exception as e:
+    print(f"Warning: Cloud Storage not available: {e}")
+    storage_client = None
+    storage_available = False
 
 # Google Sheets API Setup
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -39,6 +50,12 @@ def get_sheets_service():
 
 class ReadExcelRequest(BaseModel):
     file_path: str
+    sheet_name: Optional[str] = None
+    header_row: int = 0
+
+class ReadStorageRequest(BaseModel):
+    file_path: str
+    bucket: Optional[str] = None
     sheet_name: Optional[str] = None
     header_row: int = 0
 
@@ -115,7 +132,8 @@ def dataframe_to_json(df: pd.DataFrame) -> Dict[str, Any]:
     """Convert dataframe to structured JSON"""
     return {
         "columns": df.columns.tolist(),
-        "data": df.to_dict(orient='records'),
+        "rows": len(df),
+        "data": df.head(100).to_dict(orient='records'),  # Ограничиваем до 100 строк
         "summary": {
             "total_rows": len(df),
             "numeric_columns": df.select_dtypes(include=['number']).columns.tolist()
@@ -125,6 +143,24 @@ def dataframe_to_json(df: pd.DataFrame) -> Dict[str, Any]:
 # ==========================================
 # Core Functions
 # ==========================================
+
+def read_from_storage(file_path: str, bucket_name: Optional[str] = None) -> bytes:
+    """Read file from Cloud Storage"""
+    if not storage_available:
+        raise HTTPException(status_code=503, detail="Cloud Storage not available")
+    
+    try:
+        bucket_name = bucket_name or REPORTS_BUCKET
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_path)
+        
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+        
+        return blob.download_as_bytes()
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read from storage: {str(e)}")
 
 def read_excel_file(file_path: str, sheet_name: Optional[str] = None, 
                    header_row: int = 0) -> pd.DataFrame:
@@ -183,9 +219,48 @@ async def health():
         "agent": "report-reader",
         "capabilities": {
             "excel": True,
-            "google_sheets": sheets_available
+            "google_sheets": sheets_available,
+            "cloud_storage": storage_available
         }
     }
+
+@app.post("/read/storage", response_model=ReadResponse)
+async def read_from_cloud_storage(request: ReadStorageRequest,
+                                   cleaning: DataCleaningOptions = DataCleaningOptions()):
+    """Read and parse file from Cloud Storage"""
+    try:
+        # Read file from storage
+        file_bytes = read_from_storage(request.file_path, request.bucket)
+        
+        # Determine file type and read
+        if request.file_path.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(file_bytes), 
+                             sheet_name=request.sheet_name, 
+                             header=request.header_row)
+        elif request.file_path.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Clean data
+        df, warnings = clean_dataframe(df, cleaning)
+        
+        # Extract metadata
+        metadata = extract_metadata(df)
+        metadata["file_path"] = request.file_path
+        
+        # Convert to JSON
+        data = dataframe_to_json(df)
+        
+        return ReadResponse(
+            status="success",
+            data=data,
+            metadata=metadata,
+            warnings=warnings
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/read/excel", response_model=ReadResponse)
 async def read_excel(request: ReadExcelRequest, 

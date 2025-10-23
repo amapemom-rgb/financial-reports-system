@@ -1,13 +1,13 @@
-"""Logic Understanding Agent - with Report Reader Integration"""
+"""Logic Understanding Agent - Specialized for Marketplace Financial Analysis"""
 import os
 from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import vertexai
-from vertexai.generative_models import GenerativeModel
+from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 
-app = FastAPI(title="Logic Understanding Agent - with File Reading")
+app = FastAPI(title="Logic Understanding Agent - Marketplace Expert")
 
 # Инициализация
 PROJECT_ID = os.getenv("PROJECT_ID", "financial-reports-ai-2024")
@@ -16,8 +16,36 @@ REPORT_READER_URL = os.getenv("REPORT_READER_URL", "https://report-reader-agent-
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 
-# Simple Gemini model
-model = GenerativeModel("gemini-2.0-flash-exp")
+# Gemini model with optimized config
+generation_config = GenerationConfig(
+    temperature=0.3,  # Более детерминированные ответы
+    top_p=0.8,
+    top_k=40,
+    max_output_tokens=1024,  # Ограничиваем длину ответа
+)
+
+model = GenerativeModel(
+    "gemini-2.0-flash-exp",
+    generation_config=generation_config
+)
+
+SYSTEM_INSTRUCTION = """Ты опытный финансовый аналитик, специализирующийся на анализе отчетов маркетплейсов.
+
+**Твоя роль:**
+- Анализировать финансовые отчеты с маркетплейсов (продажи, транзакции, метрики)
+- Выявлять тренды, аномалии, ключевые показатели
+- Давать конкретные выводы и рекомендации
+
+**Правила общения:**
+- Будь КРАТКИМ и по существу (максимум 3-4 абзаца)
+- Если нет данных из файла - попроси пользователя загрузить отчет
+- Фокусируйся на ключевых метриках: выручка, количество транзакций, средний чек, динамика
+- Не уходи в общие советы - работай с конкретными данными
+- Отвечай на русском языке профессионально
+
+**Если пользователь спрашивает общие вопросы:**
+Скажи: "Я специализируюсь на анализе финансовых отчетов маркетплейсов. Загрузите файл слева, и я проанализирую ваши данные: выручку, транзакции, тренды продаж."
+"""
 
 class AnalyzeRequest(BaseModel):
     query: str
@@ -28,23 +56,15 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     status: str
     insights: str
-    agent_mode: str = "with_file_reading"
+    agent_mode: str = "marketplace_expert"
     metadata: Dict = {}
 
 async def read_file_from_storage(file_path: str) -> Dict:
     """Read file using report-reader-agent"""
     try:
-        # Определяем тип файла
-        if file_path.endswith(('.xlsx', '.xls')):
-            endpoint = f"{REPORT_READER_URL}/read/storage"
-            payload = {"file_path": file_path}
-        elif file_path.endswith('.csv'):
-            endpoint = f"{REPORT_READER_URL}/read/storage"
-            payload = {"file_path": file_path}
-        else:
-            return {"error": "Unsupported file type"}
+        endpoint = f"{REPORT_READER_URL}/read/storage"
+        payload = {"file_path": file_path}
         
-        # Вызываем report-reader-agent
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, json=payload)
             
@@ -60,17 +80,17 @@ async def read_file_from_storage(file_path: str) -> Dict:
 async def health():
     return {
         "status": "healthy",
-        "agent": "logic-understanding-with-files",
+        "agent": "marketplace-financial-analyst",
         "model": "gemini-2.0-flash-exp",
-        "features": ["file_reading", "data_analysis"]
+        "specialization": "marketplace_reports"
     }
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_report(request: AnalyzeRequest):
-    """AI analysis with file reading capability"""
+    """AI analysis specialized for marketplace financial reports"""
     try:
         file_data = None
-        file_summary = ""
+        data_summary = ""
         
         # Проверяем есть ли file_path в контексте
         if request.context and "file_path" in request.context:
@@ -82,54 +102,67 @@ async def analyze_report(request: AnalyzeRequest):
             if "error" not in file_result:
                 file_data = file_result
                 
-                # Создаем краткое описание данных для промпта
+                # Создаем структурированное описание данных
                 if "data" in file_result:
                     data_info = file_result["data"]
                     rows_count = data_info.get("rows", 0)
                     columns = data_info.get("columns", [])
+                    sample_data = data_info.get("data", [])[:3]  # Первые 3 строки
                     
-                    file_summary = f"""
-**Данные из файла:**
-- Количество строк: {rows_count}
-- Столбцы: {', '.join(columns[:10])}
-- Первые несколько записей:
-{str(data_info.get('data', [])[:5])}
+                    data_summary = f"""
+**Загруженный отчет:**
+Строк: {rows_count}
+Столбцы: {', '.join(columns[:15])}
+
+Образец данных (первые 3 записи):
+```
+{chr(10).join([str(row) for row in sample_data])}
+```
 """
-                else:
-                    file_summary = f"Данные файла: {str(file_result)[:500]}"
         
         # Формируем промпт
-        prompt = f"""Ты опытный финансовый аналитик. Проанализируй следующую ситуацию:
+        if data_summary:
+            prompt = f"""{SYSTEM_INSTRUCTION}
 
-**Вопрос пользователя:**
+**ДАННЫЕ ИЗ ОТЧЕТА:**
+{data_summary}
+
+**ВОПРОС ПОЛЬЗОВАТЕЛЯ:**
 {request.query}
 
-{file_summary if file_summary else ""}
+**ТВОЯ ЗАДАЧА:**
+Проанализируй данные и ответь на вопрос. Будь конкретным, фокусируйся на цифрах и трендах. Максимум 4 абзаца.
+"""
+        else:
+            # Нет данных - короткий ответ
+            prompt = f"""{SYSTEM_INSTRUCTION}
 
-**Твоя задача:**
-1. Если есть данные из файла - проанализируй их подробно
-2. Выдели ключевые метрики и тренды
-3. Дай конкретные выводы и рекомендации
-4. Будь кратким и по существу
+Пользователь спрашивает: "{request.query}"
 
-Отвечай на русском языке профессионально, но понятно.
+У тебя НЕТ загруженных данных. Ответь кратко (1-2 предложения) и попроси загрузить отчет для анализа.
 """
         
-        # Генерируем ответ через Gemini
+        # Генерируем ответ
         response = model.generate_content(prompt)
         
         return AnalyzeResponse(
             status="completed",
             insights=response.text,
-            agent_mode="with_file_reading",
+            agent_mode="marketplace_expert",
             metadata={
                 "model": "gemini-2.0-flash-exp",
-                "file_read": file_data is not None,
-                "has_data": bool(file_summary)
+                "has_file_data": file_data is not None,
+                "rows_analyzed": file_data.get("data", {}).get("rows", 0) if file_data else 0
             }
         )
     
     except Exception as e:
+        # Обработка rate limit
+        if "429" in str(e) or "Resource exhausted" in str(e):
+            raise HTTPException(
+                status_code=429, 
+                detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
+            )
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.get("/test-connection")

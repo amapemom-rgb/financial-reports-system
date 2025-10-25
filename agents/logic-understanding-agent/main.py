@@ -1,11 +1,18 @@
 """Logic Understanding Agent - Specialized for Marketplace Financial Analysis"""
 import os
+import logging
+import time
 from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
+from google.cloud import secretmanager
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Logic Understanding Agent - Marketplace Expert")
 
@@ -29,7 +36,8 @@ model = GenerativeModel(
     generation_config=generation_config
 )
 
-SYSTEM_INSTRUCTION = """Ты опытный финансовый аналитик, специализирующийся на анализе отчетов маркетплейсов.
+# Default system instruction (fallback)
+DEFAULT_SYSTEM_INSTRUCTION = """Ты опытный финансовый аналитик, специализирующийся на анализе отчетов маркетплейсов.
 
 **Твоя роль:**
 - Анализировать финансовые отчеты с маркетплейсов (продажи, транзакции, метрики)
@@ -47,6 +55,45 @@ SYSTEM_INSTRUCTION = """Ты опытный финансовый аналити�
 Скажи: "Я специализируюсь на анализе финансовых отчетов маркетплейсов. Загрузите файл слева, и я проанализирую ваши данные: выручку, транзакции, тренды продаж."
 """
 
+def get_system_prompt() -> str:
+    """
+    Load system prompt from Secret Manager.
+    Falls back to DEFAULT_SYSTEM_INSTRUCTION if secret is unavailable.
+    """
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        secret_name = f"projects/{PROJECT_ID}/secrets/GEMINI_SYSTEM_PROMPT/versions/latest"
+        
+        logger.info(f"Attempting to load system prompt from Secret Manager: {secret_name}")
+        
+        response = client.access_secret_version(request={"name": secret_name})
+        prompt = response.payload.data.decode("UTF-8")
+        
+        logger.info("✅ System prompt loaded successfully from Secret Manager")
+        return prompt
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load prompt from Secret Manager, using default: {e}")
+        return DEFAULT_SYSTEM_INSTRUCTION
+
+# Cache the system prompt on startup (refresh every request for dynamic updates)
+# For production, you might want to cache this for a few minutes
+_cached_prompt = None
+_last_prompt_refresh = 0
+PROMPT_CACHE_SECONDS = 60  # Refresh every 60 seconds
+
+def get_cached_system_prompt() -> str:
+    """Get system prompt with caching to avoid excessive Secret Manager calls"""
+    global _cached_prompt, _last_prompt_refresh
+    
+    current_time = time.time()
+    if _cached_prompt is None or (current_time - _last_prompt_refresh) > PROMPT_CACHE_SECONDS:
+        _cached_prompt = get_system_prompt()
+        _last_prompt_refresh = current_time
+        logger.info("🔄 System prompt cache refreshed")
+    
+    return _cached_prompt
+
 class AnalyzeRequest(BaseModel):
     query: str
     report_id: Optional[str] = None
@@ -63,26 +110,33 @@ async def read_file_from_storage(file_path: str) -> Dict:
     """Read file using report-reader-agent"""
     try:
         endpoint = f"{REPORT_READER_URL}/read/storage"
-        payload = {"file_path": file_path}
+        payload = {"request": {"file_path": file_path}}  # Nested structure for FastAPI
+        
+        logger.info(f"Reading file from storage: {file_path}")
         
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, json=payload)
             
             if response.status_code == 200:
+                logger.info(f"✅ File read successfully: {file_path}")
                 return response.json()
             else:
+                logger.error(f"❌ Report reader failed: {response.status_code}")
                 return {"error": f"Report reader failed: {response.status_code}"}
     
     except Exception as e:
+        logger.error(f"❌ Failed to read file: {str(e)}")
         return {"error": f"Failed to read file: {str(e)}"}
 
 @app.get("/health")
 async def health():
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "agent": "marketplace-financial-analyst",
         "model": "gemini-2.0-flash-exp",
-        "specialization": "marketplace_reports"
+        "specialization": "marketplace_reports",
+        "features": ["dynamic_prompts", "secret_manager"]
     }
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -91,6 +145,9 @@ async def analyze_report(request: AnalyzeRequest):
     try:
         file_data = None
         data_summary = ""
+        
+        # Load dynamic system prompt
+        system_instruction = get_cached_system_prompt()
         
         # Проверяем есть ли file_path в контексте
         if request.context and "file_path" in request.context:
@@ -122,7 +179,7 @@ async def analyze_report(request: AnalyzeRequest):
         
         # Формируем промпт
         if data_summary:
-            prompt = f"""{SYSTEM_INSTRUCTION}
+            prompt = f"""{system_instruction}
 
 **ДАННЫЕ ИЗ ОТЧЕТА:**
 {data_summary}
@@ -135,15 +192,36 @@ async def analyze_report(request: AnalyzeRequest):
 """
         else:
             # Нет данных - короткий ответ
-            prompt = f"""{SYSTEM_INSTRUCTION}
+            prompt = f"""{system_instruction}
 
 Пользователь спрашивает: "{request.query}"
 
 У тебя НЕТ загруженных данных. Ответь кратко (1-2 предложения) и попроси загрузить отчет для анализа.
 """
         
-        # Генерируем ответ
-        response = model.generate_content(prompt)
+        # Генерируем ответ с retry logic для 429 errors
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Generating AI response (attempt {attempt + 1}/{max_retries})")
+                response = model.generate_content(prompt)
+                logger.info("✅ AI response generated successfully")
+                break
+            except Exception as gemini_error:
+                if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
+                        )
+                raise
         
         return AnalyzeResponse(
             status="completed",
@@ -152,17 +230,15 @@ async def analyze_report(request: AnalyzeRequest):
             metadata={
                 "model": "gemini-2.0-flash-exp",
                 "has_file_data": file_data is not None,
-                "rows_analyzed": file_data.get("data", {}).get("rows", 0) if file_data else 0
+                "rows_analyzed": file_data.get("data", {}).get("rows", 0) if file_data else 0,
+                "prompt_source": "secret_manager"
             }
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
-        # Обработка rate limit
-        if "429" in str(e) or "Resource exhausted" in str(e):
-            raise HTTPException(
-                status_code=429, 
-                detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
-            )
+        logger.error(f"❌ Analysis failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.get("/test-connection")
@@ -180,6 +256,24 @@ async def test_report_reader():
         return {
             "error": str(e),
             "report_reader_url": REPORT_READER_URL
+        }
+
+@app.get("/prompt/info")
+async def get_prompt_info():
+    """Get information about current system prompt (for debugging)"""
+    try:
+        current_prompt = get_cached_system_prompt()
+        return {
+            "status": "success",
+            "prompt_length": len(current_prompt),
+            "prompt_source": "secret_manager" if current_prompt != DEFAULT_SYSTEM_INSTRUCTION else "default",
+            "cache_age_seconds": time.time() - _last_prompt_refresh,
+            "prompt_preview": current_prompt[:200] + "..." if len(current_prompt) > 200 else current_prompt
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
         }
 
 if __name__ == "__main__":

@@ -1,0 +1,26 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/${PROJECT_ID}/financial-reports/logic-understanding-agent:${_IMAGE_TAG}'
+      - '-f'
+      - 'agents/logic-understanding-agent/Dockerfile'
+      - 'agents/logic-understanding-agent'
+
+  # Push the Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/${PROJECT_ID}/financial-reports/logic-understanding-agent:${_IMAGE_TAG}'
+
+images:
+  - 'us-central1-docker.pkg.dev/${PROJECT_ID}/financial-reports/logic-understanding-agent:${_IMAGE_TAG}'
+
+substitutions:
+  _IMAGE_TAG: 'latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'N1_HIGHCPU_8'

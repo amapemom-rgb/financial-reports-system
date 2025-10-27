@@ -26,7 +26,7 @@ REPORTS_BUCKET = os.getenv("REPORTS_BUCKET", "financial-reports-ai-2024-reports"
 TASKS_TOPIC = os.getenv("TASKS_TOPIC", "financial-reports-tasks")
 RESULTS_TOPIC = os.getenv("RESULTS_TOPIC", "financial-reports-results")
 
-LOGIC_AGENT_URL = os.getenv("LOGIC_AGENT_URL", "http://logic-understanding-agent:8080")
+LOGIC_AGENT_URL = os.getenv("LOGIC_AGENT_URL", "https://logic-understanding-agent-38390150695.us-central1.run.app")
 REPORT_READER_URL = os.getenv("REPORT_READER_URL", "http://report-reader-agent:8081")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://orchestrator-agent-eu66elwpia-uc.a.run.app")
 
@@ -88,9 +88,18 @@ class ChatResponse(BaseModel):
     response: str
     conversation_id: str
     timestamp: str
+    request_id: Optional[str] = None  # NEW: for feedback tracking
     file_context: Optional[dict] = None
 
-# HTML UI
+class FeedbackRequest(BaseModel):
+    request_id: str
+    feedback_type: str  # "positive" or "negative"
+    comment: Optional[str] = None
+
+class RegenerateRequest(BaseModel):
+    request_id: str
+
+# HTML UI with Feedback Buttons
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -177,24 +186,67 @@ HTML_TEMPLATE = """
         }
         .message {
             margin-bottom: 15px;
+            animation: slideIn 0.3s;
+        }
+        .message-content {
             padding: 12px 18px;
             border-radius: 18px;
             max-width: 80%;
-            animation: slideIn 0.3s;
         }
         @keyframes slideIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .message.user {
+        .message.user .message-content {
             background: #667eea;
             color: white;
             margin-left: auto;
             text-align: right;
         }
-        .message.ai {
+        .message.ai .message-content {
             background: #e6efff;
             color: #333;
+        }
+        /* Feedback buttons */
+        .feedback-buttons {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            margin-left: 0;
+        }
+        .feedback-btn {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .feedback-btn:hover {
+            background: #f5f5f5;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .feedback-btn:active {
+            transform: translateY(0);
+        }
+        .feedback-btn.liked {
+            background: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+        .feedback-btn.disliked {
+            background: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+        .feedback-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         .input-group {
             display: flex;
@@ -295,8 +347,10 @@ HTML_TEMPLATE = """
                 <div class="chat-container">
                     <div class="messages" id="messages">
                         <div class="message ai">
-                            Привет! Я AI-ассистент для анализа финансовых отчетов. 
-                            Загрузите файл слева, и я помогу вам его проанализировать.
+                            <div class="message-content">
+                                Привет! Я AI-ассистент для анализа финансовых отчетов. 
+                                Загрузите файл слева, и я помогу вам его проанализировать.
+                            </div>
                         </div>
                     </div>
                     <div class="input-group">
@@ -396,7 +450,7 @@ HTML_TEMPLATE = """
 
                 if (response.ok) {
                     conversationId = data.conversation_id;
-                    addMessage('ai', data.response);
+                    addMessage('ai', data.response, data.request_id);
                 } else {
                     addMessage('ai', `Ошибка: ${data.detail}`);
                 }
@@ -405,12 +459,109 @@ HTML_TEMPLATE = """
             }
         }
 
-        function addMessage(type, text) {
+        function addMessage(type, text, requestId = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
-            messageDiv.textContent = text;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = text;
+            
+            messageDiv.appendChild(contentDiv);
+            
+            // Add feedback buttons only for AI messages with requestId
+            if (type === 'ai' && requestId) {
+                const feedbackDiv = document.createElement('div');
+                feedbackDiv.className = 'feedback-buttons';
+                feedbackDiv.innerHTML = `
+                    <button class="feedback-btn" onclick="sendFeedback('${requestId}', 'positive', this)" title="Мне понравился этот ответ">
+                        👍 Нравится
+                    </button>
+                    <button class="feedback-btn" onclick="sendFeedback('${requestId}', 'negative', this)" title="Мне не понравился этот ответ">
+                        👎 Не нравится
+                    </button>
+                    <button class="feedback-btn" onclick="regenerateResponse('${requestId}', this)" title="Переделать ответ">
+                        🔄 Переделать
+                    </button>
+                `;
+                messageDiv.appendChild(feedbackDiv);
+            }
+            
             messagesDiv.appendChild(messageDiv);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function sendFeedback(requestId, feedbackType, buttonElement) {
+            // Disable all buttons in this feedback group
+            const feedbackDiv = buttonElement.parentElement;
+            const buttons = feedbackDiv.querySelectorAll('.feedback-btn');
+            buttons.forEach(btn => btn.disabled = true);
+
+            try {
+                const response = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request_id: requestId,
+                        feedback_type: feedbackType
+                    })
+                });
+
+                if (response.ok) {
+                    // Highlight the clicked button
+                    buttonElement.classList.add(feedbackType === 'positive' ? 'liked' : 'disliked');
+                    
+                    // Show brief success message
+                    const originalText = buttonElement.textContent;
+                    buttonElement.textContent = feedbackType === 'positive' ? '✓ Отправлено' : '✓ Отправлено';
+                    setTimeout(() => {
+                        buttonElement.textContent = originalText;
+                    }, 2000);
+                } else {
+                    alert('Ошибка отправки фидбэка');
+                    buttons.forEach(btn => btn.disabled = false);
+                }
+            } catch (error) {
+                alert(`Ошибка: ${error.message}`);
+                buttons.forEach(btn => btn.disabled = false);
+            }
+        }
+
+        async function regenerateResponse(requestId, buttonElement) {
+            // Disable button during regeneration
+            buttonElement.disabled = true;
+            const originalText = buttonElement.textContent;
+            buttonElement.textContent = '⏳ Переделываю...';
+
+            try {
+                const response = await fetch('/api/regenerate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request_id: requestId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Add new regenerated message
+                    addMessage('ai', data.response, data.request_id);
+                    buttonElement.textContent = '✓ Готово';
+                    setTimeout(() => {
+                        buttonElement.textContent = originalText;
+                        buttonElement.disabled = false;
+                    }, 2000);
+                } else {
+                    alert(`Ошибка: ${data.detail}`);
+                    buttonElement.textContent = originalText;
+                    buttonElement.disabled = false;
+                }
+            } catch (error) {
+                alert(`Ошибка: ${error.message}`);
+                buttonElement.textContent = originalText;
+                buttonElement.disabled = false;
+            }
         }
 
         function showStatus(type, message) {
@@ -443,7 +594,9 @@ async def health_check():
             "storage": storage_available,
             "pubsub": pubsub_available,
             "ai_analysis": True,
-            "chat": True
+            "chat": True,
+            "user_feedback": True,  # NEW
+            "regenerate": True  # NEW
         }
     }
 
@@ -479,10 +632,58 @@ async def chat_with_ai(request: ChatRequest):
                 response=result.get("insights", "Извините, не могу обработать запрос"),
                 conversation_id=conv_id,
                 timestamp=datetime.utcnow().isoformat(),
+                request_id=result.get("request_id"),  # NEW: pass request_id from Logic Agent
                 file_context={"file_id": request.file_id} if request.file_id else None
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+@app.post("/api/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """Proxy feedback to Logic Agent"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{LOGIC_AGENT_URL}/feedback",
+                json=request.dict()
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Feedback submission failed: {response.text}"
+                )
+            
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Feedback failed: {str(e)}")
+
+@app.post("/api/regenerate")
+async def regenerate_response(request: RegenerateRequest):
+    """Proxy regenerate request to Logic Agent"""
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{LOGIC_AGENT_URL}/regenerate",
+                json=request.dict()
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Regenerate failed: {response.text}"
+                )
+            
+            result = response.json()
+            
+            # Return in same format as chat
+            return {
+                "response": result.get("insights", "Извините, не могу обработать запрос"),
+                "request_id": result.get("request_id"),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Regenerate failed: {str(e)}")
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):

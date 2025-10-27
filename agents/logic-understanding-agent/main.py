@@ -1,4 +1,7 @@
-"""Logic Understanding Agent - Specialized for Marketplace Financial Analysis"""
+"""Logic Understanding Agent - Specialized for Marketplace Financial Analysis
+
+Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
+"""
 import os
 import logging
 import time
@@ -12,6 +15,13 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 from google.cloud import secretmanager, firestore
+
+# Import multi-sheet intelligence functions
+from prompts import (
+    build_super_prompt,
+    build_sheet_analysis_prompt,
+    extract_sheet_name_from_user_response
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -109,7 +119,7 @@ def get_cached_system_prompt() -> str:
     
     return _cached_prompt
 
-# In-memory cache for request data (for regenerate functionality)
+# In-memory cache for request data (for regenerate functionality and multi-sheet context)
 _request_cache: Dict[str, Dict] = {}
 
 class AnalyzeRequest(BaseModel):
@@ -133,8 +143,62 @@ class FeedbackRequest(BaseModel):
 class RegenerateRequest(BaseModel):
     request_id: str
 
+class AnalyzeSheetRequest(BaseModel):
+    """Request to analyze a specific sheet after metadata review"""
+    file_path: str
+    sheet_name: str
+    original_query: str
+    conversation_context: Optional[str] = None
+
+async def get_file_metadata(file_path: str) -> Dict:
+    """Get metadata for Excel file (all sheets) using Report Reader"""
+    try:
+        endpoint = f"{REPORT_READER_URL}/analyze/metadata"
+        payload = {"request": {"file_path": file_path}}
+        
+        logger.info(f"Fetching metadata for file: {file_path}")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(endpoint, json=payload)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Metadata fetched successfully")
+                return response.json()
+            else:
+                logger.error(f"❌ Metadata fetch failed: {response.status_code}")
+                return {"error": f"Metadata fetch failed: {response.status_code}"}
+    
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch metadata: {str(e)}")
+        return {"error": f"Failed to fetch metadata: {str(e)}"}
+
+async def read_specific_sheet(file_path: str, sheet_name: str) -> Dict:
+    """Read specific sheet using Report Reader"""
+    try:
+        endpoint = f"{REPORT_READER_URL}/read/sheet"
+        payload = {
+            "file_path": file_path,
+            "sheet_name": sheet_name
+        }
+        
+        logger.info(f"Reading sheet '{sheet_name}' from file: {file_path}")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(endpoint, json=payload)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Sheet '{sheet_name}' read successfully")
+                return response.json()
+            else:
+                logger.error(f"❌ Sheet read failed: {response.status_code}")
+                return {"error": f"Sheet read failed: {response.status_code}"}
+    
+    except Exception as e:
+        logger.error(f"❌ Failed to read sheet: {str(e)}")
+        return {"error": f"Failed to read sheet: {str(e)}"}
+
 async def read_file_from_storage(file_path: str) -> Dict:
-    """Read file using report-reader-agent"""
+    """Read file using report-reader-agent (reads first sheet only)"""
     try:
         endpoint = f"{REPORT_READER_URL}/read/storage"
         payload = {"request": {"file_path": file_path}}  # Nested structure for FastAPI
@@ -163,18 +227,32 @@ async def health():
         "agent": "marketplace-financial-analyst",
         "model": "gemini-2.0-flash-exp",
         "specialization": "marketplace_reports",
-        "features": ["dynamic_prompts", "secret_manager", "user_feedback", "regenerate", "cors_enabled"]
+        "features": [
+            "dynamic_prompts", 
+            "secret_manager", 
+            "user_feedback", 
+            "regenerate", 
+            "cors_enabled",
+            "multi_sheet_intelligence"  # NEW
+        ]
     }
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_report(request: AnalyzeRequest):
-    """AI analysis specialized for marketplace financial reports"""
+    """AI analysis specialized for marketplace financial reports
+    
+    Enhanced with Multi-Sheet Intelligence:
+    - For files with 5+ sheets: uses metadata-first approach
+    - Asks user to select specific sheet for analysis
+    - Loads only selected sheet data (performance optimization)
+    """
     try:
         # Generate unique request_id
         request_id = str(uuid.uuid4())
         
         file_data = None
         data_summary = ""
+        use_multi_sheet = False
         
         # Load dynamic system prompt
         system_instruction = get_cached_system_prompt()
@@ -183,20 +261,69 @@ async def analyze_report(request: AnalyzeRequest):
         if request.context and "file_path" in request.context:
             file_path = request.context["file_path"]
             
-            # Читаем файл через report-reader-agent
-            file_result = await read_file_from_storage(file_path)
-            
-            if "error" not in file_result:
-                file_data = file_result
+            # Step 1: Check if file is Excel and get metadata
+            if file_path.endswith(('.xlsx', '.xls')):
+                logger.info("📊 Excel file detected - checking for multiple sheets")
                 
-                # Создаем структурированное описание данных
-                if "data" in file_result:
-                    data_info = file_result["data"]
-                    rows_count = data_info.get("rows", 0)
-                    columns = data_info.get("columns", [])
-                    sample_data = data_info.get("data", [])[:3]  # Первые 3 строки
+                metadata_result = await get_file_metadata(file_path)
+                
+                if "error" not in metadata_result:
+                    sheets_count = metadata_result.get("sheets_count", 1)
                     
-                    data_summary = f"""
+                    # Multi-sheet logic: if > 5 sheets, use metadata-first approach
+                    if sheets_count > 5:
+                        logger.info(f"🎯 Multi-sheet mode activated: {sheets_count} sheets detected")
+                        use_multi_sheet = True
+                        
+                        # Build super prompt for sheet selection
+                        prompt = build_super_prompt(metadata_result, request.query)
+                        
+                        # Generate response
+                        response = model.generate_content(prompt)
+                        
+                        # Cache metadata and request for follow-up
+                        _request_cache[request_id] = {
+                            "query": request.query,
+                            "context": request.context,
+                            "options": request.options,
+                            "prompt": prompt,
+                            "response": response.text,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "metadata": metadata_result,  # Store metadata for next interaction
+                            "multi_sheet_mode": True
+                        }
+                        
+                        return AnalyzeResponse(
+                            status="completed",
+                            insights=response.text,
+                            request_id=request_id,
+                            agent_mode="multi_sheet_selector",
+                            metadata={
+                                "model": "gemini-2.0-flash-exp",
+                                "sheets_count": sheets_count,
+                                "sheet_names": metadata_result.get("sheet_names", []),
+                                "multi_sheet_mode": True,
+                                "next_action": "select_sheet",
+                                "prompt_source": "secret_manager"
+                            }
+                        )
+            
+            # Standard flow: single sheet or < 5 sheets
+            if not use_multi_sheet:
+                # Читаем файл через report-reader-agent (first sheet)
+                file_result = await read_file_from_storage(file_path)
+                
+                if "error" not in file_result:
+                    file_data = file_result
+                    
+                    # Создаем структурированное описание данных
+                    if "data" in file_result:
+                        data_info = file_result["data"]
+                        rows_count = data_info.get("rows", 0)
+                        columns = data_info.get("columns", [])
+                        sample_data = data_info.get("data", [])[:3]  # Первые 3 строки
+                        
+                        data_summary = f"""
 **Загруженный отчет:**
 Строк: {rows_count}
 Столбцы: {', '.join(columns[:15])}
@@ -281,6 +408,111 @@ async def analyze_report(request: AnalyzeRequest):
     except Exception as e:
         logger.error(f"❌ Analysis failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@app.post("/analyze/sheet", response_model=AnalyzeResponse)
+async def analyze_specific_sheet(request: AnalyzeSheetRequest):
+    """Analyze specific sheet after user selection (Part 2 of multi-sheet flow)
+    
+    This endpoint is called after user selects a sheet from the metadata preview.
+    It loads full data for the selected sheet and performs detailed analysis.
+    """
+    try:
+        # Generate unique request_id
+        request_id = str(uuid.uuid4())
+        
+        logger.info(f"📊 Analyzing specific sheet: {request.sheet_name}")
+        
+        # Read specific sheet data
+        sheet_result = await read_specific_sheet(request.file_path, request.sheet_name)
+        
+        if "error" in sheet_result:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to read sheet: {sheet_result['error']}"
+            )
+        
+        # Extract data summary
+        data_info = sheet_result.get("data", {})
+        rows_count = data_info.get("rows", 0)
+        columns = data_info.get("columns", [])
+        sample_data = data_info.get("data", [])[:3]
+        
+        data_summary = f"""
+**Лист: "{request.sheet_name}"**
+Строк: {rows_count}
+Столбцы: {', '.join(columns[:15])}
+
+Образец данных (первые 3 записи):
+```
+{chr(10).join([str(row) for row in sample_data])}
+```
+"""
+        
+        # Load system instruction
+        system_instruction = get_cached_system_prompt()
+        
+        # Build analysis prompt
+        prompt = build_sheet_analysis_prompt(
+            system_instruction=system_instruction,
+            user_query=request.original_query,
+            sheet_name=request.sheet_name,
+            data_summary=data_summary
+        )
+        
+        # Generate analysis
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Generating sheet analysis (attempt {attempt + 1}/{max_retries})")
+                response = model.generate_content(prompt)
+                logger.info("✅ Sheet analysis generated successfully")
+                break
+            except Exception as gemini_error:
+                if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
+                        )
+                raise
+        
+        # Cache request
+        _request_cache[request_id] = {
+            "query": request.original_query,
+            "sheet_name": request.sheet_name,
+            "file_path": request.file_path,
+            "prompt": prompt,
+            "response": response.text,
+            "timestamp": datetime.utcnow().isoformat(),
+            "multi_sheet_analysis": True
+        }
+        
+        return AnalyzeResponse(
+            status="completed",
+            insights=response.text,
+            request_id=request_id,
+            agent_mode="sheet_analyst",
+            metadata={
+                "model": "gemini-2.0-flash-exp",
+                "sheet_name": request.sheet_name,
+                "rows_analyzed": rows_count,
+                "multi_sheet_analysis": True,
+                "prompt_source": "secret_manager"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Sheet analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Sheet analysis failed: {str(e)}")
 
 @app.post("/feedback")
 async def submit_feedback(request: FeedbackRequest):

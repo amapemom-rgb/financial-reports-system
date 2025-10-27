@@ -30,6 +30,49 @@
             25% { transform: translateX(-10px); }
             75% { transform: translateX(10px); }
         }
+        /* NEW: Feedback buttons styles */
+        .feedback-buttons {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .feedback-btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .feedback-btn:hover {
+            transform: scale(1.05);
+        }
+        .feedback-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-like {
+            background: rgba(34, 197, 94, 0.2);
+            border-color: rgb(34, 197, 94);
+        }
+        .btn-like:hover {
+            background: rgba(34, 197, 94, 0.3);
+        }
+        .btn-dislike {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgb(239, 68, 68);
+        }
+        .btn-dislike:hover {
+            background: rgba(239, 68, 68, 0.3);
+        }
+        .btn-regenerate {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: rgb(59, 130, 246);
+        }
+        .btn-regenerate:hover {
+            background: rgba(59, 130, 246, 0.3);
+        }
+
     </style>
 </head>
 <body class="min-h-screen text-white p-4 md:p-8">
@@ -39,7 +82,7 @@
             <h1 class="text-3xl md:text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
                 Financial Reports Analysis System
             </h1>
-            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖</p>
+            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖 <span class="text-xs text-green-400">(v8-feedback)</span></p>
         </div>
 
         <!-- Error Banner (hidden by default) -->
@@ -180,16 +223,19 @@
                 <li>Проверь статус сервисов</li>
                 <li>Загрузи CSV или Excel файл 📊</li>
                 <li>Задавай вопросы в чате 💬</li>
+                <li><span class="text-green-400">NEW:</span> Используй кнопки 👍👎🔄 для фидбэка</li>
             </ol>
         </div>
     </div>
 
     <script>
         const API_BASE = 'https://frontend-service-38390150695.us-central1.run.app';
+        const LOGIC_AGENT_URL = 'https://logic-understanding-agent-38390150695.us-central1.run.app';
         let logs = [];
         let uploadedFile = null;
         let conversationId = null;
         let logsExpanded = true;
+        let currentRequestId = null; // NEW: track request_id for feedback
 
         // ==================== Logging ====================
         function addLog(message, type = 'info') {
@@ -305,8 +351,8 @@
 
         // ==================== Services Check ====================
         document.getElementById('checkServicesBtn').addEventListener('click', async () => {
-            const token = getToken();
-            if (!token) return;
+            // const token = getToken();
+            // if (!token) return; // DISABLED for direct Logic Agent testing
 
             addLog('Проверка статуса сервисов...', 'info');
             const btn = document.getElementById('checkServicesBtn');
@@ -360,8 +406,8 @@
             const file = e.target.files[0];
             if (!file) return;
 
-            const token = getToken();
-            if (!token) return;
+            // const token = getToken();
+            // if (!token) return; // DISABLED for direct Logic Agent testing
 
             addLog(`Загрузка файла: ${file.name}`, 'info');
 
@@ -404,25 +450,103 @@
         });
 
         // ==================== Chat ====================
-        function addChatMessage(role, message) {
+        function addChatMessage(role, message, requestId = null) {
             const messagesDiv = document.getElementById('chatMessages');
-            
-            // Remove welcome message if it exists
             const welcome = messagesDiv.querySelector('.text-center');
             if (welcome) welcome.remove();
             
             const msgDiv = document.createElement('div');
             msgDiv.className = `chat-message flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            msgDiv.dataset.requestId = requestId;
+            
+            let feedbackButtons = '';
+            if (role === 'ai' && requestId) {
+                feedbackButtons = `
+                    <div class="feedback-buttons">
+                        <button class="feedback-btn btn-like" onclick="sendFeedback('${requestId}', 'positive', this)">👍 Like</button>
+                        <button class="feedback-btn btn-dislike" onclick="sendFeedback('${requestId}', 'negative', this)">👎 Dislike</button>
+                        <button class="feedback-btn btn-regenerate" onclick="regenerateResponse('${requestId}', this)">🔄 Regenerate</button>
+                    </div>
+                `;
+            }
             
             msgDiv.innerHTML = `
                 <div class="max-w-[80%] ${role === 'user' ? 'bg-blue-600' : 'bg-gray-700'} rounded-lg p-3">
                     <div class="text-xs text-gray-300 mb-1">${role === 'user' ? 'Ты' : '🤖 AI'}</div>
                     <div class="text-sm whitespace-pre-wrap">${message}</div>
+                    ${feedbackButtons}
                 </div>
             `;
             
             messagesDiv.appendChild(msgDiv);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+
+        // ==================== NEW: Feedback Functions ====================
+        async function sendFeedback(requestId, feedbackType, button) {
+            // const token = getToken();
+            // if (!token) return; // DISABLED for direct Logic Agent testing
+
+            button.disabled = true;
+            const originalText = button.textContent;
+            button.textContent = '⏳';
+
+            try {
+                const response = await fetch(`${LOGIC_AGENT_URL}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request_id: requestId,
+                        feedback_type: feedbackType
+                    })
+                });
+
+                if (response.ok) {
+                    button.textContent = feedbackType === 'positive' ? '✅' : '❌';
+                    addLog(`✅ Feedback sent: ${feedbackType}`, 'success');
+                    setTimeout(() => {
+                        button.disabled = false;
+                        button.textContent = originalText;
+                    }, 2000);
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                addLog(`❌ Feedback error: ${error.message}`, 'error');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+
+        async function regenerateResponse(requestId, button) {
+            // const token = getToken();
+            // if (!token) return; // DISABLED for direct Logic Agent testing
+
+            button.disabled = true;
+            button.textContent = '⏳ Regenerating...';
+
+            try {
+                const response = await fetch(`${LOGIC_AGENT_URL}/regenerate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    addChatMessage('ai', data.insights, data.request_id);
+                    addLog('✅ Response regenerated', 'success');
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                addLog(`❌ Regenerate error: ${error.message}`, 'error');
+                addChatMessage('ai', `Извини, не удалось сгенерировать новый ответ: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = '🔄 Regenerate';
+            }
         }
 
         async function sendMessage() {
@@ -431,8 +555,8 @@
             
             if (!message) return;
             
-            const token = getToken();
-            if (!token) return;
+            // const token = getToken();
+            // if (!token) return; // DISABLED for direct Logic Agent testing
             
             // Add user message
             addChatMessage('user', message);
@@ -445,25 +569,18 @@
             sendBtn.textContent = '⏳';
             
             try {
-                const response = await fetch(`${API_BASE}/chat`, {
+                const response = await fetch(`${LOGIC_AGENT_URL}/analyze`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: message,
-                        file_id: uploadedFile?.file_id,
-                        conversation_id: conversationId
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: message })
                 });
 
                 if (response.ok) {
                     const data = await response.json();
-                    conversationId = data.conversation_id;
+                    currentRequestId = data.request_id;
                     
-                    addChatMessage('ai', data.response);
-                    addLog('✅ Получен ответ от AI', 'success');
+                    addChatMessage('ai', data.insights, data.request_id);
+                    addLog(`✅ Получен ответ (request_id: ${data.request_id})`, 'success');
                 } else {
                     const error = await response.text();
                     addLog(`❌ Ошибка: HTTP ${response.status}`, 'error');
@@ -493,7 +610,8 @@
         }
 
         // ==================== Initialize ====================
-        addLog('Приложение запущено', 'success');
+        addLog('Приложение запущено (v8-feedback)', 'success');
+        addLog('✨ Новое: кнопки feedback (👍👎🔄)', 'info');
         addLog('⚠️ Для работы требуется токен аутентификации', 'warning');
     </script>
 </body>

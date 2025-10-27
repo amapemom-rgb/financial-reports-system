@@ -54,10 +54,7 @@ class ReadExcelRequest(BaseModel):
     header_row: int = 0
 
 class ReadStorageRequest(BaseModel):
-    file_path: str
-    bucket: Optional[str] = None
-    sheet_name: Optional[str] = None
-    header_row: int = 0
+    request: Dict[str, Any]  # Nested for compatibility
 
 class ReadSheetsRequest(BaseModel):
     spreadsheet_id: str
@@ -75,6 +72,26 @@ class ReadResponse(BaseModel):
     data: Dict[str, Any]
     metadata: Dict[str, Any]
     warnings: List[str] = []
+
+# NEW: Multi-Sheet Models
+class SheetMetadata(BaseModel):
+    name: str
+    rows: int
+    columns: List[str]
+    sample_data: List[Dict[str, Any]]
+    data_types: Dict[str, str]
+
+class FileMetadata(BaseModel):
+    sheets_count: int
+    sheet_names: List[str]
+    file_size_bytes: int
+    file_path: str
+    top_sheets_summary: List[SheetMetadata]
+
+class ReadSheetRequest(BaseModel):
+    file_path: str
+    sheet_name: str
+    bucket: Optional[str] = None
 
 # ==========================================
 # Helper Functions
@@ -217,27 +234,157 @@ async def health():
     return {
         "status": "healthy",
         "agent": "report-reader",
+        "version": "v4-metadata",
         "capabilities": {
             "excel": True,
             "google_sheets": sheets_available,
-            "cloud_storage": storage_available
+            "cloud_storage": storage_available,
+            "multi_sheet": True  # NEW
         }
     }
 
-@app.post("/read/storage", response_model=ReadResponse)
-async def read_from_cloud_storage(request: ReadStorageRequest,
-                                   cleaning: DataCleaningOptions = DataCleaningOptions()):
-    """Read and parse file from Cloud Storage"""
+@app.post("/analyze/metadata")
+async def get_file_metadata(request: ReadStorageRequest) -> FileMetadata:
+    """Get metadata for all sheets in Excel file without loading full data
+    
+    This endpoint scans all sheets and returns:
+    - Total number of sheets
+    - Sheet names
+    - Preview of top 5 largest sheets (rows, columns, sample data)
+    """
+    try:
+        # Extract file_path from nested request structure
+        file_path = request.request.get("file_path")
+        bucket_name = request.request.get("bucket")
+        
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        
+        # Read file from storage
+        file_bytes = read_from_storage(file_path, bucket_name)
+        
+        # Read all sheets (only first 3 rows for metadata)
+        all_sheets = pd.read_excel(
+            io.BytesIO(file_bytes),
+            sheet_name=None,  # Load all sheets
+            nrows=3  # Only first 3 rows for preview
+        )
+        
+        # Get full row counts by reading without nrows limit
+        sheet_row_counts = {}
+        for sheet_name in all_sheets.keys():
+            df_full = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name)
+            sheet_row_counts[sheet_name] = len(df_full)
+        
+        # Sort sheets by size (row count)
+        sorted_sheets = sorted(
+            sheet_row_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]  # Top 5 largest sheets
+        
+        # Build detailed metadata for top sheets
+        top_sheets_summary = []
+        for sheet_name, row_count in sorted_sheets:
+            df = all_sheets[sheet_name]
+            
+            # Clean column names
+            columns = [str(col) for col in df.columns]
+            
+            # Get sample data (first 2 rows)
+            sample_data = df.head(2).to_dict(orient='records')
+            
+            # Get data types
+            data_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
+            
+            top_sheets_summary.append(SheetMetadata(
+                name=sheet_name,
+                rows=row_count,
+                columns=columns,
+                sample_data=sample_data,
+                data_types=data_types
+            ))
+        
+        return FileMetadata(
+            sheets_count=len(all_sheets),
+            sheet_names=list(all_sheets.keys()),
+            file_size_bytes=len(file_bytes),
+            file_path=file_path,
+            top_sheets_summary=top_sheets_summary
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Metadata extraction failed: {str(e)}")
+
+@app.post("/read/sheet", response_model=ReadResponse)
+async def read_specific_sheet(
+    request: ReadSheetRequest,
+    cleaning: DataCleaningOptions = DataCleaningOptions()
+):
+    """Read specific sheet by name from Excel file
+    
+    Use this after getting metadata to load full data from a specific sheet.
+    """
     try:
         # Read file from storage
         file_bytes = read_from_storage(request.file_path, request.bucket)
         
+        # Read specific sheet
+        df = pd.read_excel(
+            io.BytesIO(file_bytes),
+            sheet_name=request.sheet_name
+        )
+        
+        # Clean data
+        df, warnings = clean_dataframe(df, cleaning)
+        
+        # Extract metadata
+        metadata = extract_metadata(df)
+        metadata["file_path"] = request.file_path
+        metadata["sheet_name"] = request.sheet_name
+        
+        # Convert to JSON
+        data = dataframe_to_json(df)
+        
+        return ReadResponse(
+            status="success",
+            data=data,
+            metadata=metadata,
+            warnings=warnings
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read sheet: {str(e)}")
+
+@app.post("/read/storage", response_model=ReadResponse)
+async def read_from_cloud_storage(request: ReadStorageRequest,
+                                   cleaning: DataCleaningOptions = DataCleaningOptions()):
+    """Read and parse file from Cloud Storage (reads first sheet only)
+    
+    For multi-sheet files, use /analyze/metadata first, then /read/sheet
+    """
+    try:
+        # Extract parameters from nested request structure
+        file_path = request.request.get("file_path")
+        bucket_name = request.request.get("bucket")
+        sheet_name = request.request.get("sheet_name")
+        header_row = request.request.get("header_row", 0)
+        
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        
+        # Read file from storage
+        file_bytes = read_from_storage(file_path, bucket_name)
+        
         # Determine file type and read
-        if request.file_path.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(io.BytesIO(file_bytes), 
-                             sheet_name=request.sheet_name, 
-                             header=request.header_row)
-        elif request.file_path.endswith('.csv'):
+        if file_path.endswith(('.xlsx', '.xls')):
+            # For Excel, read first sheet by default or specified sheet
+            df = pd.read_excel(
+                io.BytesIO(file_bytes), 
+                sheet_name=sheet_name or 0,  # First sheet if not specified
+                header=header_row
+            )
+        elif file_path.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(file_bytes))
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
@@ -247,7 +394,9 @@ async def read_from_cloud_storage(request: ReadStorageRequest,
         
         # Extract metadata
         metadata = extract_metadata(df)
-        metadata["file_path"] = request.file_path
+        metadata["file_path"] = file_path
+        if sheet_name:
+            metadata["sheet_name"] = sheet_name
         
         # Convert to JSON
         data = dataframe_to_json(df)

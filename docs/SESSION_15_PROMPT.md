@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 ТВОЯ ЗАДАЧА: Bug Fixes + Optional Improvement #3
+## 🎯 ТВОЯ ЗАДАЧА: Bug Fixes + Improvement #3 (Multi-Sheet Intelligence)
 
 Я продолжаю работу над **Financial Reports AI System**.
 
@@ -16,273 +16,285 @@
 
 ## 🚀 ЧТО ДЕЛАТЬ ПЕРВЫМ ДЕЛОМ:
 
-### Шаг 1: Прочитай контекст (5 минут)
+### Шаг 1: Прочитай контекст (3 минуты)
 
-Прочитай эти файлы **В ТАКОМ ПОРЯДКЕ:**
+Прочитай эти файлы В ТАКОМ ПОРЯДКЕ:
 
 1. **[docs/SESSION_14_SUMMARY.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_14_SUMMARY.md)** - Что сделано в Session 14
-2. **Раздел "Known Issues"** в SESSION_14_SUMMARY.md - Что нужно исправить
+2. **[docs/SESSION_13_IMPROVEMENT_PLAN.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_13_IMPROVEMENT_PLAN.md)** - Раздел "Improvement #3" для Multi-Sheet
 
-### Шаг 2: Определи приоритеты
+### Шаг 2: Определи приоритет работ
 
-После прочтения спроси пользователя:
+После чтения спроси пользователя:
 
 ```
-Привет! Я изучил Session 14 - отличная работа! 🎉
+Привет! Начинаю Session 15.
 
-Feedback кнопки (👍👎🔄) работают, но есть 3 известные проблемы:
+Изучил контекст - Session 14 завершена успешно! 🎉
+Кнопки feedback (👍👎🔄) работают отлично!
 
-**HIGH Priority:**
-1. 🐛 Regenerate не заменяет сообщение (добавляет новое)
-2. 🐛 Загрузка файлов не работает
+Но есть 2 известные проблемы:
 
-**LOW Priority:**
-3. 🎨 Auth Token поле можно убрать
+**Bug #1 (MINOR):** При нажатии 🔄 Regenerate старое сообщение не убирается из чата
+**Bug #2 (OPTIONAL):** Загрузка файлов не работает (нужна интеграция с orchestrator)
 
-Что делаем сначала? Варианты:
-A) Исправить оба HIGH bugs (~2-3 часа)
-B) Только Regenerate UI (~1 час)
-C) Начать Improvement #3 (Multi-Sheet) и вернуться к багам позже
+**Что делаем в Session 15?**
 
-Твой выбор?
+**Вариант A (рекомендую):** Сразу начать Improvement #3 (Multi-Sheet Intelligence для Excel с 30+ листами)
+**Вариант B:** Сначала исправить Bug #1, потом Improvement #3
+**Вариант C:** Исправить оба бага, потом Improvement #3
+
+Что выбираешь?
 ```
 
 ---
 
-## 📋 План работы (после выбора пользователя):
+## 📋 План работы по вариантам:
 
-### Option A: Fix Both HIGH Bugs (Recommended)
+### Вариант A: Improvement #3 сразу (рекомендуется)
 
-#### Bug #1: Fix Regenerate UI (1 час)
+**Почему:** Баги минорные, не блокируют работу, Improvement #3 - важная функциональность
 
-**Проблема:** Regenerate добавляет новое сообщение вместо замены старого
+**Phase 1: Report Reader Enhancement (1 час)**
+1. Добавить endpoint `/analyze/metadata` для метаданных Excel
+2. Добавить endpoint `/read/sheet` для чтения конкретного листа
+3. Build & Deploy: `report-reader-agent:v4-metadata`
 
-**Решение:**
+**Phase 2: Logic Agent Super Prompt (1 час)**
+1. Создать `agents/logic-understanding-agent/prompts.py`
+2. Добавить функцию `build_super_prompt(metadata, user_query)`
+3. Обновить `/analyze` для работы с метаданными
+4. Build & Deploy: `logic-understanding-agent:v10-multisheet`
 
-1. Обнови `web-ui/index.html`, функцию `regenerateResponse`:
+**Phase 3: Testing (30 минут)**
+1. Создать тестовый Excel с 30+ листами
+2. Test metadata extraction
+3. Test interactive sheet selection
+4. Document results
 
-```javascript
-async function regenerateResponse(requestId, button) {
-    const token = getToken();
-    if (!token) return;
+### Вариант B: Bug #1 → Improvement #3
 
-    button.disabled = true;
-    button.textContent = '⏳ Regenerating...';
+**Phase 1: Fix Regenerate UI (30 минут)**
+1. Обновить `web-ui/index.html`
+2. Изменить `addChatMessage()` чтобы заменять старое сообщение
+3. Deploy: `web-ui:v3-fixed`
 
-    // NEW: Find and store the parent message div
-    const messageDiv = button.closest('.chat-message');
+**Phase 2-4:** Как в Варианте A
 
-    try {
-        const response = await fetch(`${LOGIC_AGENT_URL}/regenerate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request_id: requestId })
-        });
+### Вариант C: Bug #1 + Bug #2 → Improvement #3
 
-        if (response.ok) {
-            const data = await response.json();
-            
-            // NEW: Replace the message content instead of adding new message
-            const contentDiv = messageDiv.querySelector('.text-sm.whitespace-pre-wrap');
-            const buttonsDiv = messageDiv.querySelector('.feedback-buttons');
-            
-            // Update text
-            contentDiv.textContent = data.insights;
-            
-            // Update buttons with new request_id
-            buttonsDiv.innerHTML = `
-                <button class="feedback-btn btn-like" onclick="sendFeedback('${data.request_id}', 'positive', this)">👍 Like</button>
-                <button class="feedback-btn btn-dislike" onclick="sendFeedback('${data.request_id}', 'negative', this)">👎 Dislike</button>
-                <button class="feedback-btn btn-regenerate" onclick="regenerateResponse('${data.request_id}', this)">🔄 Regenerate</button>
-            `;
-            
-            addLog('✅ Response regenerated and replaced', 'success');
-        } else {
-            throw new Error(`HTTP ${response.status}`);
-        }
-    } catch (error) {
-        addLog(`❌ Regenerate error: ${error.message}`, 'error');
-    } finally {
-        button.disabled = false;
-        button.textContent = '🔄 Regenerate';
-    }
-}
-```
+**Phase 1: Fix Regenerate UI (30 минут)**
+**Phase 2: Fix File Upload (1-2 часа)**
+1. Опция A: Интегрировать с frontend-service
+2. Опция B: Добавить upload в web-ui backend
+**Phase 3-5:** Improvement #3 (может не хватить времени)
 
-2. Test: Click Regenerate multiple times - old message should update in place
+---
 
-#### Bug #2: Fix File Upload (1-2 часа)
+## 🔍 Детали реализации Improvement #3:
 
-**Проблема:** Web-UI не может загружать файлы (нет backend endpoint)
+### Report Reader: Metadata Endpoint
 
-**Решение Option 1: Add upload to Logic Agent (QUICK)**
-
-1. Добавь в `agents/logic-understanding-agent/main.py`:
+**File:** `agents/report-reader-agent/main.py`
 
 ```python
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from google.cloud import storage
+from pydantic import BaseModel
+from typing import Dict, List
 
-# Add after app initialization
-storage_client = storage.Client(project=PROJECT_ID)
-REPORTS_BUCKET = "financial-reports-uploads"
+class SheetMetadata(BaseModel):
+    rows: int
+    columns: List[str]
+    sample_data: List[Dict]  # First 1-2 rows
+    data_types: Dict[str, str]
 
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload file to Cloud Storage"""
-    try:
-        # Generate unique filename
-        file_id = str(uuid.uuid4())
-        file_extension = file.filename.split('.')[-1]
-        gcs_path = f"uploads/{file_id}.{file_extension}"
-        
-        # Upload to Cloud Storage
-        bucket = storage_client.bucket(REPORTS_BUCKET)
-        blob = bucket.blob(gcs_path)
-        
-        content = await file.read()
-        blob.upload_from_string(content)
-        
-        logger.info(f"✅ File uploaded: {gcs_path}")
-        
-        return {
-            "status": "success",
-            "file_id": file_id,
-            "file_name": file.filename,
-            "file_path": gcs_path
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Upload failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+class FileMetadata(BaseModel):
+    sheets_count: int
+    sheet_names: List[str]
+    file_size_bytes: int
+    preliminary_summary: Dict[str, SheetMetadata]
+
+@app.post("/analyze/metadata")
+async def get_file_metadata(request: ReadStorageRequest) -> FileMetadata:
+    """Generate metadata for all sheets without loading full data"""
+    
+    # Download from Cloud Storage
+    bucket = storage_client.bucket(REPORTS_BUCKET)
+    blob = bucket.blob(request.request.file_path)
+    file_bytes = blob.download_as_bytes()
+    
+    # Read sheet names only
+    all_sheets = pd.read_excel(
+        BytesIO(file_bytes),
+        sheet_name=None,
+        nrows=2  # Only first 2 rows
+    )
+    
+    metadata = FileMetadata(
+        sheets_count=len(all_sheets),
+        sheet_names=list(all_sheets.keys()),
+        file_size_bytes=len(file_bytes),
+        preliminary_summary={}
+    )
+    
+    # Get top 5 largest sheets
+    sorted_sheets = sorted(
+        all_sheets.items(),
+        key=lambda x: len(x[1]),
+        reverse=True
+    )[:5]
+    
+    for sheet_name, df in sorted_sheets:
+        metadata.preliminary_summary[sheet_name] = SheetMetadata(
+            rows=len(df),
+            columns=list(df.columns),
+            sample_data=df.head(1).to_dict(orient='records'),
+            data_types={col: str(dtype) for col, dtype in df.dtypes.items()}
+        )
+    
+    return metadata
+
+@app.post("/read/sheet")
+async def read_specific_sheet(
+    request: ReadStorageRequest,
+    sheet_name: str
+) -> dict:
+    """Read specific sheet by name"""
+    # Same as read_from_cloud_storage but with sheet_name parameter
 ```
 
-2. Обнови `web-ui/index.html` - измени URL в fileInput listener:
+### Logic Agent: Super Prompt
 
-```javascript
-const response = await fetch(`${LOGIC_AGENT_URL}/upload`, {
-    method: 'POST',
-    body: formData  // Remove Authorization header if not needed
-});
+**File:** `agents/logic-understanding-agent/prompts.py` (NEW)
+
+```python
+def build_super_prompt(metadata: FileMetadata, user_query: str) -> str:
+    """Build intelligent prompt for multi-sheet analysis"""
+    
+    return f"""
+[ИНСТРУКЦИЯ ДЛЯ АНАЛИТИКА GEMINI]
+
+Ты — AI-ассистент "Финансовый Эксперт". Твой тон — дружелюбный и профессиональный.
+
+[РОЛЬ]
+Твоя задача — интерактивный анализ. Не пытайся ответить сразу. Сначала собери контекст.
+
+[КОНТЕКСТ ДАННЫХ]
+Пользователь загрузил Excel-файл. Вот его **МЕТА-СТРУКТУРА**:
+
+Количество листов: {metadata.sheets_count}
+Названия листов: {", ".join(metadata.sheet_names)}
+Размер файла: {metadata.file_size_bytes / 1024:.1f} KB
+
+Предварительное резюме топ-5 листов:
+{format_preliminary_summary(metadata.preliminary_summary)}
+
+[ВОПРОС ПОЛЬЗОВАТЕЛЯ]
+"{user_query}"
+
+[СТРУКТУРА ОТВЕТА (Обязательно)]
+1. **РЕЗЮМЕ ОТЧЕТА:** Укажи количество листов ({metadata.sheets_count}) и перечисли их названия.
+
+2. **ГЛАВНЫЙ ВОПРОС:** Задай ОДИН четкий вопрос пользователю, чтобы он выбрал, какой лист анализировать.
+
+[ПРИМЕР ОТВЕТА]
+"В отчете {metadata.sheets_count} листов: {', '.join(metadata.sheet_names[:3])}...
+Какой из них (например, 'Продажи' или 'Расходы') вы хотите проанализировать первым?"
+
+[СЛЕДУЮЩИЙ ШАГ]
+После выбора пользователем конкретного листа, система загрузит полные данные этого листа.
+"""
 ```
 
-3. Создай bucket если не существует:
+### Logic Agent: Updated Analyze
 
-```bash
-gsutil mb -p financial-reports-ai-2024 -l us-central1 gs://financial-reports-uploads/
-gsutil iam ch serviceAccount:financial-reports-sa@financial-reports-ai-2024.iam.gserviceaccount.com:objectAdmin gs://financial-reports-uploads/
+**File:** `agents/logic-understanding-agent/main.py`
+
+```python
+from .prompts import build_super_prompt
+
+@app.post("/analyze")
+async def analyze_report(request: AnalyzeRequest):
+    """Enhanced analysis with metadata-first approach"""
+    
+    file_path = request.context.get("file_path")
+    
+    if file_path:
+        # Step 1: Get metadata first
+        metadata_url = f"{REPORT_READER_URL}/analyze/metadata"
+        metadata_response = await http_client.post(
+            metadata_url,
+            json={"request": {"file_path": file_path}}
+        )
+        metadata = FileMetadata(**metadata_response.json())
+        
+        # Check if many sheets
+        if metadata.sheets_count > 5:
+            # Step 2: Build super prompt for sheet selection
+            system_prompt = build_super_prompt(metadata, request.query)
+            
+            # Step 3: Ask Gemini for interactive question
+            response = model.generate_content(system_prompt)
+            
+            return AnalyzeResponse(
+                status="completed",
+                insights=response.text,
+                request_id=request_id,
+                metadata={
+                    "sheets_count": metadata.sheets_count,
+                    "sheet_names": metadata.sheet_names,
+                    "next_action": "select_sheet"
+                }
+            )
+        else:
+            # Few sheets - load all data normally
+            # ... existing logic ...
 ```
-
-4. Test: Upload file → should see success message
 
 ---
 
-### Option B: Only Fix Regenerate (~1 hour)
+## ✅ Success Criteria:
 
-Выполни только **Bug #1** из Option A выше.
+### For Improvement #3:
+- [ ] Report reader returns metadata for 30+ sheet files
+- [ ] Logic agent asks which sheet to analyze
+- [ ] User can select specific sheet
+- [ ] Only selected sheet is loaded (performance optimization)
+- [ ] System handles files with different sheet structures
 
----
-
-### Option C: Start Improvement #3 (Multi-Sheet Intelligence)
-
-**Prerequisites:** Bugs can wait, let's implement cool feature!
-
-**Goal:** Handle Excel files with 30+ sheets using metadata-first approach
-
-**Plan:**
-1. Read **[docs/SESSION_13_IMPROVEMENT_PLAN.md - Section "Improvement #3"](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_13_IMPROVEMENT_PLAN.md)**
-2. Add metadata endpoint to Report Reader
-3. Update Logic Agent to use metadata
-4. Test with multi-sheet file
-
-Time: 3-4 hours
+### For Bug Fixes (if doing):
+- [ ] Bug #1: Regenerate removes/marks old message
+- [ ] Bug #2: File upload works through UI
 
 ---
 
-## 🧪 Testing After Fixes
+## 🧪 Testing Multi-Sheet Feature:
 
-### Test Regenerate Fix:
-```
-1. Open https://web-ui-38390150695.us-central1.run.app
-2. Send message "test"
-3. Click 🔄 Regenerate
-4. ✅ Old message should UPDATE (not add new message)
-5. Click 🔄 Regenerate again
-6. ✅ Same message should UPDATE again
-```
+**Create Test Excel:**
+```python
+import pandas as pd
 
-### Test File Upload Fix:
-```
-1. Open Web-UI
-2. Click "📁 CSV / Excel" button
-3. Select a .csv or .xlsx file
-4. ✅ Should see "✅ filename.csv" success message
-5. Send message "analyze the file"
-6. ✅ AI should respond with file data
+# Create Excel with 30 sheets
+with pd.ExcelWriter('test_30_sheets.xlsx') as writer:
+    for i in range(1, 31):
+        df = pd.DataFrame({
+            'Product': [f'Product_{j}' for j in range(100)],
+            'Sales': [1000 + j for j in range(100)],
+            'Date': pd.date_range('2024-01-01', periods=100)
+        })
+        df.to_excel(writer, sheet_name=f'Sheet_{i}', index=False)
 ```
 
----
-
-## 📦 Deployment Steps (After Fixes)
-
-### If Logic Agent Changed:
-```bash
-cd ~/financial-reports-system
-
-git pull origin main
-
-# Build v10-bugfixes
-gcloud builds submit \
-  --config=agents/logic-understanding-agent/cloudbuild.yaml \
-  --substitutions=_IMAGE_TAG=v10-bugfixes \
-  --project=financial-reports-ai-2024 \
-  .
-
-# Deploy
-gcloud run deploy logic-understanding-agent \
-  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/logic-understanding-agent:v10-bugfixes \
-  --platform=managed \
-  --region=us-central1 \
-  --service-account=financial-reports-sa@financial-reports-ai-2024.iam.gserviceaccount.com \
-  --allow-unauthenticated \
-  --set-env-vars="PROJECT_ID=financial-reports-ai-2024,REGION=us-central1,REPORT_READER_URL=https://report-reader-agent-38390150695.us-central1.run.app" \
-  --memory=1Gi \
-  --cpu=1 \
-  --timeout=300 \
-  --max-instances=10 \
-  --project=financial-reports-ai-2024
-```
-
-### If Web-UI Changed:
-```bash
-cd ~/financial-reports-system
-
-# Build v3-bugfixes
-gcloud builds submit \
-  --config=web-ui/cloudbuild.yaml \
-  --project=financial-reports-ai-2024 \
-  web-ui/
-
-# Deploy
-gcloud run deploy web-ui \
-  --image=us-central1-docker.pkg.dev/financial-reports-ai-2024/financial-reports/web-ui:v3-bugfixes \
-  --platform=managed \
-  --region=us-central1 \
-  --allow-unauthenticated \
-  --port=8080 \
-  --memory=512Mi \
-  --timeout=300 \
-  --max-instances=10 \
-  --project=financial-reports-ai-2024
-```
-
-(Note: Update cloudbuild.yaml version tags first!)
+**Test Flow:**
+1. Upload file
+2. System: "Found 30 sheets: Sheet_1, Sheet_2, ... Which to analyze?"
+3. User: "Sheet_5"
+4. System: Loads only Sheet_5 and analyzes
 
 ---
 
 ## ⚠️ ВАЖНО: Мониторинг токенов
 
-Когда останется **< 30,000 токенов**:
+Когда останется **< 20,000 токенов**:
 1. Остановись
 2. Закоммить все в GitHub
 3. Создать SESSION_15_SUMMARY.md
@@ -290,74 +302,59 @@ gcloud run deploy web-ui \
 
 ---
 
-## 🎯 Success Criteria
+## 📚 Полная документация:
 
-**Bug Fixes:**
-- [ ] Regenerate replaces message (not adds new)
-- [ ] File upload works from Web-UI
-- [ ] Uploaded file can be analyzed
+**Базовая архитектура:**
+- [SESSION_12_DEPLOYMENT_SUCCESS.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_12_DEPLOYMENT_SUCCESS.md) - System baseline
+- [SESSION_13_SUMMARY.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_13_SUMMARY.md) - Dynamic Prompts
+- [SESSION_14_SUMMARY.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_14_SUMMARY.md) - User Feedback
 
-**Optional - Improvement #3:**
-- [ ] Metadata endpoint returns sheet info
-- [ ] Logic Agent asks user which sheet
-- [ ] User can select sheet name
-- [ ] Analysis works on selected sheet only
+**Детальный план Improvement #3:**
+- [SESSION_13_IMPROVEMENT_PLAN.md - Раздел Improvement #3](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_13_IMPROVEMENT_PLAN.md)
 
----
-
-## 📚 Reference Links
-
-**Current System:**
-- Web-UI: https://web-ui-38390150695.us-central1.run.app
-- Logic Agent: https://logic-understanding-agent-38390150695.us-central1.run.app
-- Report Reader: https://report-reader-agent-38390150695.us-central1.run.app
-
-**Documentation:**
-- [SESSION_14_SUMMARY.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_14_SUMMARY.md) - Session 14 results
-- [SESSION_13_IMPROVEMENT_PLAN.md](https://github.com/amapemom-rgb/financial-reports-system/blob/main/docs/SESSION_13_IMPROVEMENT_PLAN.md) - All 3 improvements plan
-
-**Quick Test:**
-```bash
-# Test current system
-curl -X POST https://logic-understanding-agent-38390150695.us-central1.run.app/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"query": "test"}'
-```
+**Известные проблемы:**
+- Bug #1: Regenerate не убирает старое сообщение
+- Bug #2: Загрузка файлов не работает
 
 ---
 
-## 🚀 START WORKING:
+## 🚀 НАЧНИ РАБОТУ:
 
-**Your first response to user should be:**
+**Твой первый ответ пользователю должен быть:**
 
 ```
-Привет! Начинаю Session 15 - Bug Fixes + Improvements! 🚀
+Привет! Начинаю Session 15 - Bug Fixes + Improvement #3 (Multi-Sheet Intelligence).
 
-[Читаю SESSION_14_SUMMARY.md...]
+Сначала быстро изучу контекст...
+[читаешь SESSION_14_SUMMARY.md и SESSION_13_IMPROVEMENT_PLAN.md]
 
-Отлично! Session 14 завершена успешно:
-✅ Feedback кнопки (👍👎🔄) работают
-✅ Backend и Frontend задеплоены
-✅ Firestore интеграция готова
+Отлично! Session 14 завершена успешно! 🎉
+- ✅ Firestore настроен
+- ✅ Feedback endpoints работают
+- ✅ Web-UI с кнопками 👍👎🔄 задеплоен
+- ✅ CORS включен
 
-Обнаружено 3 проблемы:
-🐛 HIGH: Regenerate не заменяет сообщение
-🐛 HIGH: Загрузка файлов не работает  
-🎨 LOW: Auth Token поле можно убрать
+Есть 2 известные проблемы:
+1. Bug #1: Regenerate не убирает старое сообщение (MINOR)
+2. Bug #2: Загрузка файлов не работает (OPTIONAL)
 
-**Что делаем?**
-A) Исправить оба HIGH bugs (~2-3 часа)
-B) Только Regenerate UI (~1 час)
-C) Начать Improvement #3 (Multi-Sheet) и вернуться к багам позже
+**Что делаем в Session 15?**
 
-Какой вариант выбираешь?
+Вариант A (рекомендую): Сразу начать Improvement #3 (Multi-Sheet для Excel 30+)
+Вариант B: Исправить Bug #1 → Improvement #3
+Вариант C: Исправить оба бага → Improvement #3
+
+Что выбираешь?
 ```
 
 ---
 
 **GitHub:** https://github.com/amapemom-rgb/financial-reports-system  
 **Status:** Ready for Session 15  
-**Current Version:** Logic Agent v9-cors, Web-UI v2-feedback  
-**Priority:** Bug Fixes → Improvement #3
+**Task:** Bug Fixes (optional) + Improvement #3 (Multi-Sheet Intelligence)
 
-**Let's fix those bugs and make the system even better! 💪**
+**Помни:** 
+- Читай документацию ПЕРЕД началом
+- Спроси пользователя о приоритетах
+- Следи за токенами (останови при < 20K)
+- Improvement #3 - сложная задача, может потребовать 2 сессии

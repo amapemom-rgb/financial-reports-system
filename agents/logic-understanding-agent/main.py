@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
@@ -17,6 +18,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Logic Understanding Agent - Marketplace Expert")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for testing
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Инициализация
 PROJECT_ID = os.getenv("PROJECT_ID", "financial-reports-ai-2024")
@@ -153,7 +163,7 @@ async def health():
         "agent": "marketplace-financial-analyst",
         "model": "gemini-2.0-flash-exp",
         "specialization": "marketplace_reports",
-        "features": ["dynamic_prompts", "secret_manager", "user_feedback", "regenerate"]
+        "features": ["dynamic_prompts", "secret_manager", "user_feedback", "regenerate", "cors_enabled"]
     }
 
 @app.post("/analyze", response_model=AnalyzeResponse)

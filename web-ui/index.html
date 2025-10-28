@@ -73,6 +73,26 @@
             background: rgba(59, 130, 246, 0.3);
         }
 
+        /* NEW: Regenerated message styles (Bug #1 Fix) */
+        .regenerated-message {
+            opacity: 0.5;
+            position: relative;
+            border-left: 3px solid rgba(59, 130, 246, 0.5) !important;
+            padding-left: 8px !important;
+        }
+
+        .regenerated-label {
+            position: absolute;
+            top: -8px;
+            right: 8px;
+            background: rgba(59, 130, 246, 0.3);
+            color: rgb(147, 197, 253);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 <body class="min-h-screen text-white p-4 md:p-8">
@@ -82,7 +102,7 @@
             <h1 class="text-3xl md:text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
                 Financial Reports Analysis System
             </h1>
-            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖 <span class="text-xs text-green-400">(v8-feedback)</span></p>
+            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖 <span class="text-xs text-green-400">(v9-regenerate-fix)</span></p>
         </div>
 
         <!-- Error Banner (hidden by default) -->
@@ -526,6 +546,31 @@
             button.disabled = true;
             button.textContent = '⏳ Regenerating...';
 
+            // NEW: Find and mark old message as regenerated (Bug #1 Fix)
+            const oldMessage = document.querySelector(`[data-request-id="${requestId}"]`);
+            if (oldMessage) {
+                const messageContent = oldMessage.querySelector('.max-w-\\[80\\%\\]');
+                if (messageContent) {
+                    // Add regenerated styling
+                    messageContent.classList.add('regenerated-message');
+                    
+                    // Add "Regenerated" label
+                    const label = document.createElement('div');
+                    label.className = 'regenerated-label';
+                    label.textContent = '🔄 Regenerated';
+                    messageContent.appendChild(label);
+                    
+                    // Disable feedback buttons on old message
+                    const feedbackButtons = messageContent.querySelectorAll('.feedback-btn');
+                    feedbackButtons.forEach(btn => {
+                        btn.disabled = true;
+                        btn.style.opacity = '0.5';
+                    });
+                    
+                    addLog(`Старое сообщение (${requestId}) помечено как regenerated`, 'info');
+                }
+            }
+
             try {
                 const response = await fetch(`${LOGIC_AGENT_URL}/regenerate`, {
                     method: 'POST',
@@ -535,6 +580,7 @@
 
                 if (response.ok) {
                     const data = await response.json();
+                    // Add new regenerated message
                     addChatMessage('ai', data.insights, data.request_id);
                     addLog('✅ Response regenerated', 'success');
                 } else {
@@ -610,7 +656,8 @@
         }
 
         // ==================== Initialize ====================
-        addLog('Приложение запущено (v8-feedback)', 'success');
+        addLog('Приложение запущено (v9-regenerate-fix)', 'success');
+        addLog('✨ NEW: Bug #1 Fixed - Regenerated messages now marked visually', 'info');
         addLog('✨ Новое: кнопки feedback (👍👎🔄)', 'info');
         addLog('⚠️ Для работы требуется токен аутентификации', 'warning');
     </script>

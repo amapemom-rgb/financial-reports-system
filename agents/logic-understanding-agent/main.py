@@ -1,6 +1,7 @@
 """Logic Understanding Agent - Specialized for Marketplace Financial Analysis
 
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
+Session 19: Added Retry Logic for Report Reader calls (Priority 1)
 """
 import os
 import logging
@@ -15,6 +16,15 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 from google.cloud import secretmanager, firestore
+
+# Session 19: Retry logic for Report Reader
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
 
 # Import multi-sheet intelligence functions
 from prompts import (
@@ -150,9 +160,30 @@ class AnalyzeSheetRequest(BaseModel):
     original_query: str
     conversation_context: Optional[str] = None
 
+# Session 19: Retry configuration for Report Reader calls
+# Retries on network errors, timeouts, and HTTP errors (except 4xx client errors)
+REPORT_READER_RETRY_POLICY = retry(
+    stop=stop_after_attempt(3),  # Try 3 times total
+    wait=wait_exponential(multiplier=1, min=2, max=10),  # 2s → 4s → 8s
+    retry=retry_if_exception_type((
+        httpx.HTTPError,
+        httpx.TimeoutException,
+        httpx.ConnectError,
+        httpx.ReadTimeout
+    )),
+    before_sleep=before_sleep_log(logger, logging.WARNING)
+)
+
 async def get_file_metadata(file_path: str) -> Dict:
-    """Get metadata for Excel file (all sheets) using Report Reader"""
-    try:
+    """Get metadata for Excel file (all sheets) using Report Reader
+    
+    Session 19: Enhanced with retry logic (3 attempts with exponential backoff)
+    Expected: 7% failure rate → ~1% failure rate
+    """
+    
+    @REPORT_READER_RETRY_POLICY
+    async def _fetch_with_retry():
+        """Inner function with retry decorator"""
         endpoint = f"{REPORT_READER_URL}/analyze/metadata"
         payload = {"request": {"file_path": file_path}}
         
@@ -161,20 +192,35 @@ async def get_file_metadata(file_path: str) -> Dict:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, json=payload)
             
-            if response.status_code == 200:
-                logger.info(f"✅ Metadata fetched successfully")
-                return response.json()
-            else:
-                logger.error(f"❌ Metadata fetch failed: {response.status_code}")
-                return {"error": f"Metadata fetch failed: {response.status_code}"}
+            # Don't retry on 4xx client errors (bad request, not found, etc.)
+            if 400 <= response.status_code < 500:
+                logger.error(f"❌ Client error (no retry): {response.status_code}")
+                return {"error": f"Client error: {response.status_code}"}
+            
+            # Raise for 5xx errors to trigger retry
+            response.raise_for_status()
+            
+            logger.info(f"✅ Metadata fetched successfully")
+            return response.json()
     
+    try:
+        return await _fetch_with_retry()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ Metadata fetch failed after retries: {e}")
+        return {"error": f"Metadata fetch failed: {e.response.status_code}"}
     except Exception as e:
-        logger.error(f"❌ Failed to fetch metadata: {str(e)}")
+        logger.error(f"❌ Failed to fetch metadata after retries: {str(e)}")
         return {"error": f"Failed to fetch metadata: {str(e)}"}
 
 async def read_specific_sheet(file_path: str, sheet_name: str) -> Dict:
-    """Read specific sheet using Report Reader"""
-    try:
+    """Read specific sheet using Report Reader
+    
+    Session 19: Enhanced with retry logic (3 attempts with exponential backoff)
+    """
+    
+    @REPORT_READER_RETRY_POLICY
+    async def _read_with_retry():
+        """Inner function with retry decorator"""
         endpoint = f"{REPORT_READER_URL}/read/sheet"
         payload = {
             "file_path": file_path,
@@ -186,20 +232,35 @@ async def read_specific_sheet(file_path: str, sheet_name: str) -> Dict:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, json=payload)
             
-            if response.status_code == 200:
-                logger.info(f"✅ Sheet '{sheet_name}' read successfully")
-                return response.json()
-            else:
-                logger.error(f"❌ Sheet read failed: {response.status_code}")
-                return {"error": f"Sheet read failed: {response.status_code}"}
+            # Don't retry on 4xx client errors
+            if 400 <= response.status_code < 500:
+                logger.error(f"❌ Client error (no retry): {response.status_code}")
+                return {"error": f"Client error: {response.status_code}"}
+            
+            # Raise for 5xx errors to trigger retry
+            response.raise_for_status()
+            
+            logger.info(f"✅ Sheet '{sheet_name}' read successfully")
+            return response.json()
     
+    try:
+        return await _read_with_retry()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ Sheet read failed after retries: {e}")
+        return {"error": f"Sheet read failed: {e.response.status_code}"}
     except Exception as e:
-        logger.error(f"❌ Failed to read sheet: {str(e)}")
+        logger.error(f"❌ Failed to read sheet after retries: {str(e)}")
         return {"error": f"Failed to read sheet: {str(e)}"}
 
 async def read_file_from_storage(file_path: str) -> Dict:
-    """Read file using report-reader-agent (reads first sheet only)"""
-    try:
+    """Read file using report-reader-agent (reads first sheet only)
+    
+    Session 19: Enhanced with retry logic (3 attempts with exponential backoff)
+    """
+    
+    @REPORT_READER_RETRY_POLICY
+    async def _read_with_retry():
+        """Inner function with retry decorator"""
         endpoint = f"{REPORT_READER_URL}/read/storage"
         payload = {"request": {"file_path": file_path}}  # Nested structure for FastAPI
         
@@ -208,15 +269,24 @@ async def read_file_from_storage(file_path: str) -> Dict:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, json=payload)
             
-            if response.status_code == 200:
-                logger.info(f"✅ File read successfully: {file_path}")
-                return response.json()
-            else:
-                logger.error(f"❌ Report reader failed: {response.status_code}")
-                return {"error": f"Report reader failed: {response.status_code}"}
+            # Don't retry on 4xx client errors
+            if 400 <= response.status_code < 500:
+                logger.error(f"❌ Client error (no retry): {response.status_code}")
+                return {"error": f"Client error: {response.status_code}"}
+            
+            # Raise for 5xx errors to trigger retry
+            response.raise_for_status()
+            
+            logger.info(f"✅ File read successfully: {file_path}")
+            return response.json()
     
+    try:
+        return await _read_with_retry()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ Report reader failed after retries: {e}")
+        return {"error": f"Report reader failed: {e.response.status_code}"}
     except Exception as e:
-        logger.error(f"❌ Failed to read file: {str(e)}")
+        logger.error(f"❌ Failed to read file after retries: {str(e)}")
         return {"error": f"Failed to read file: {str(e)}"}
 
 @app.get("/health")
@@ -233,7 +303,8 @@ async def health():
             "user_feedback", 
             "regenerate", 
             "cors_enabled",
-            "multi_sheet_intelligence"  # NEW
+            "multi_sheet_intelligence",
+            "report_reader_retry_logic"  # NEW in Session 19
         ]
     }
 

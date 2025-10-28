@@ -1,7 +1,7 @@
 """Logic Understanding Agent - Specialized for Marketplace Financial Analysis
 
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
-Session 19: Added Retry Logic for Report Reader calls (Priority 1)
+Session 19: Added Retry Logic for Report Reader (Priority 1) and Firestore (Priority 2)
 """
 import os
 import logging
@@ -17,7 +17,7 @@ from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 from google.cloud import secretmanager, firestore
 
-# Session 19: Retry logic for Report Reader
+# Session 19: Retry logic for Report Reader and Firestore
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -25,6 +25,8 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log
 )
+from google.api_core import retry as google_retry
+from google.api_core import exceptions as google_exceptions
 
 # Import multi-sheet intelligence functions
 from prompts import (
@@ -160,7 +162,7 @@ class AnalyzeSheetRequest(BaseModel):
     original_query: str
     conversation_context: Optional[str] = None
 
-# Session 19: Retry configuration for Report Reader calls
+# Session 19 Priority 1: Retry configuration for Report Reader calls
 # Retries on network errors, timeouts, and HTTP errors (except 4xx client errors)
 REPORT_READER_RETRY_POLICY = retry(
     stop=stop_after_attempt(3),  # Try 3 times total
@@ -172,6 +174,21 @@ REPORT_READER_RETRY_POLICY = retry(
         httpx.ReadTimeout
     )),
     before_sleep=before_sleep_log(logger, logging.WARNING)
+)
+
+# Session 19 Priority 2: Retry policy for Firestore operations
+# Retries on transient Google Cloud API errors
+FIRESTORE_RETRY_POLICY = google_retry.Retry(
+    initial=1.0,      # Initial delay: 1.0s
+    maximum=10.0,     # Maximum delay: 10.0s
+    multiplier=2.0,   # Exponential backoff multiplier (1s → 2s → 4s → 8s → 10s)
+    deadline=30.0,    # Total retry deadline: 30s
+    predicate=google_retry.if_exception_type(
+        google_exceptions.DeadlineExceeded,
+        google_exceptions.ServiceUnavailable,
+        google_exceptions.InternalServerError,
+        google_exceptions.TooManyRequests,
+    )
 )
 
 async def get_file_metadata(file_path: str) -> Dict:
@@ -304,7 +321,8 @@ async def health():
             "regenerate", 
             "cors_enabled",
             "multi_sheet_intelligence",
-            "report_reader_retry_logic"  # NEW in Session 19
+            "report_reader_retry_logic",  # Priority 1
+            "firestore_retry_logic"       # Priority 2
         ]
     }
 
@@ -587,7 +605,11 @@ async def analyze_specific_sheet(request: AnalyzeSheetRequest):
 
 @app.post("/feedback")
 async def submit_feedback(request: FeedbackRequest):
-    """Store user feedback in Firestore"""
+    """Store user feedback in Firestore
+    
+    Session 19 Priority 2: Enhanced with retry logic for transient Firestore errors
+    Expected: 5% failure rate → ~0.5% failure rate
+    """
     try:
         # Get cached request data
         cached_request = _request_cache.get(request.request_id)
@@ -609,17 +631,29 @@ async def submit_feedback(request: FeedbackRequest):
             "prompt_used": cached_request.get("prompt")[:500],  # Truncate for storage
         }
         
-        # Store in Firestore
-        doc_ref = db.collection("feedback").document(request.request_id)
-        doc_ref.set(feedback_data)
-        
-        logger.info(f"✅ Feedback stored: {request.request_id} - {request.feedback_type}")
-        
-        return {
-            "status": "success",
-            "message": f"Feedback ({request.feedback_type}) stored successfully",
-            "request_id": request.request_id
-        }
+        # Store in Firestore with retry policy
+        try:
+            doc_ref = db.collection("feedback").document(request.request_id)
+            doc_ref.set(feedback_data, retry=FIRESTORE_RETRY_POLICY)
+            
+            logger.info(f"✅ Feedback stored: {request.request_id} - {request.feedback_type}")
+            
+            return {
+                "status": "success",
+                "message": f"Feedback ({request.feedback_type}) stored successfully",
+                "request_id": request.request_id
+            }
+            
+        except google_exceptions.GoogleAPIError as db_error:
+            # Specific Google Cloud API errors
+            error_type = type(db_error).__name__
+            logger.error(f"❌ Firestore error after retries: {error_type} - {str(db_error)}")
+            
+            # Return 503 Service Unavailable for transient database issues
+            raise HTTPException(
+                status_code=503,
+                detail="Database temporarily unavailable. Please try again in a moment."
+            )
         
     except HTTPException:
         raise

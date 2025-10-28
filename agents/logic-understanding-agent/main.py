@@ -1,11 +1,11 @@
 """Logic Understanding Agent - Specialized for Marketplace Financial Analysis
 
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
-Session 19: Added Retry Logic for Report Reader (Priority 1) and Firestore (Priority 2)
+Session 19: Complete System Hardening with Retry Logic (P1, P2, P3)
 """
 import os
 import logging
-import time
+import asyncio
 import uuid
 from datetime import datetime
 from typing import Optional, Dict
@@ -73,6 +73,9 @@ model = GenerativeModel(
     generation_config=generation_config
 )
 
+# Session 19 Priority 3: Gemini timeout configuration
+GEMINI_TIMEOUT_SECONDS = 30.0  # Maximum 30 seconds for AI response
+
 # Default system instruction (fallback)
 DEFAULT_SYSTEM_INSTRUCTION = """Ты опытный финансовый аналитик, специализирующийся на анализе отчетов маркетплейсов.
 
@@ -123,7 +126,7 @@ def get_cached_system_prompt() -> str:
     """Get system prompt with caching to avoid excessive Secret Manager calls"""
     global _cached_prompt, _last_prompt_refresh
     
-    current_time = time.time()
+    current_time = asyncio.get_event_loop().time()
     if _cached_prompt is None or (current_time - _last_prompt_refresh) > PROMPT_CACHE_SECONDS:
         _cached_prompt = get_system_prompt()
         _last_prompt_refresh = current_time
@@ -190,6 +193,76 @@ FIRESTORE_RETRY_POLICY = google_retry.Retry(
         google_exceptions.TooManyRequests,
     )
 )
+
+async def generate_with_timeout(model, prompt: str, max_retries: int = 3):
+    """Generate AI response with explicit timeout and retry logic
+    
+    Session 19 Priority 3: Wrapper for Gemini API calls with:
+    - Explicit 30-second timeout using asyncio.wait_for()
+    - Proper async pattern using asyncio.to_thread() for blocking SDK
+    - Async sleep instead of blocking time.sleep()
+    - Retry logic for rate limiting (429 errors)
+    - Proper error classification (504 for timeout, 429 for rate limit)
+    
+    Args:
+        model: Gemini GenerativeModel instance
+        prompt: Input prompt for generation
+        max_retries: Maximum retry attempts (default: 3)
+        
+    Returns:
+        Generated response object
+        
+    Raises:
+        HTTPException: With appropriate status code (429, 504, 503)
+    """
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Generating AI response (attempt {attempt + 1}/{max_retries})")
+            
+            # Wrap blocking Gemini call in asyncio.to_thread() and apply timeout
+            response = await asyncio.wait_for(
+                asyncio.to_thread(model.generate_content, prompt),
+                timeout=GEMINI_TIMEOUT_SECONDS
+            )
+            
+            logger.info("✅ AI response generated successfully")
+            return response
+            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Gemini API timeout (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                logger.warning(f"⚠️ Retrying after {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                raise HTTPException(
+                    status_code=504,
+                    detail="AI analysis timed out (30s limit). The model failed to respond in time. Please simplify your query or try again."
+                )
+                
+        except Exception as gemini_error:
+            # Handle rate limiting (429 errors)
+            if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)  # Use async sleep
+                    continue
+                else:
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
+                    )
+            
+            # Other errors
+            logger.error(f"❌ Gemini API error: {str(gemini_error)}")
+            raise HTTPException(
+                status_code=503,
+                detail="An error occurred during AI analysis. Please try again."
+            )
 
 async def get_file_metadata(file_path: str) -> Dict:
     """Get metadata for Excel file (all sheets) using Report Reader
@@ -322,7 +395,8 @@ async def health():
             "cors_enabled",
             "multi_sheet_intelligence",
             "report_reader_retry_logic",  # Priority 1
-            "firestore_retry_logic"       # Priority 2
+            "firestore_retry_logic",       # Priority 2
+            "gemini_explicit_timeout"      # Priority 3
         ]
     }
 
@@ -334,6 +408,8 @@ async def analyze_report(request: AnalyzeRequest):
     - For files with 5+ sheets: uses metadata-first approach
     - Asks user to select specific sheet for analysis
     - Loads only selected sheet data (performance optimization)
+    
+    Session 19: All retry logic and timeout protection applied
     """
     try:
         # Generate unique request_id
@@ -367,8 +443,8 @@ async def analyze_report(request: AnalyzeRequest):
                         # Build super prompt for sheet selection
                         prompt = build_super_prompt(metadata_result, request.query)
                         
-                        # Generate response
-                        response = model.generate_content(prompt)
+                        # Generate response with timeout protection
+                        response = await generate_with_timeout(model, prompt)
                         
                         # Cache metadata and request for follow-up
                         _request_cache[request_id] = {
@@ -378,7 +454,7 @@ async def analyze_report(request: AnalyzeRequest):
                             "prompt": prompt,
                             "response": response.text,
                             "timestamp": datetime.utcnow().isoformat(),
-                            "metadata": metadata_result,  # Store metadata for next interaction
+                            "metadata": metadata_result,
                             "multi_sheet_mode": True
                         }
                         
@@ -410,7 +486,7 @@ async def analyze_report(request: AnalyzeRequest):
                         data_info = file_result["data"]
                         rows_count = data_info.get("rows", 0)
                         columns = data_info.get("columns", [])
-                        sample_data = data_info.get("data", [])[:3]  # Первые 3 строки
+                        sample_data = data_info.get("data", [])[:3]
                         
                         data_summary = f"""
 **Загруженный отчет:**
@@ -445,29 +521,8 @@ async def analyze_report(request: AnalyzeRequest):
 У тебя НЕТ загруженных данных. Ответь кратко (1-2 предложения) и попроси загрузить отчет для анализа.
 """
         
-        # Генерируем ответ с retry logic для 429 errors
-        max_retries = 3
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Generating AI response (attempt {attempt + 1}/{max_retries})")
-                response = model.generate_content(prompt)
-                logger.info("✅ AI response generated successfully")
-                break
-            except Exception as gemini_error:
-                if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise HTTPException(
-                            status_code=429,
-                            detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
-                        )
-                raise
+        # Generate response with timeout and retry protection
+        response = await generate_with_timeout(model, prompt)
         
         # Cache request for regenerate functionality
         _request_cache[request_id] = {
@@ -504,6 +559,8 @@ async def analyze_specific_sheet(request: AnalyzeSheetRequest):
     
     This endpoint is called after user selects a sheet from the metadata preview.
     It loads full data for the selected sheet and performs detailed analysis.
+    
+    Session 19: All retry logic and timeout protection applied
     """
     try:
         # Generate unique request_id
@@ -548,29 +605,8 @@ async def analyze_specific_sheet(request: AnalyzeSheetRequest):
             data_summary=data_summary
         )
         
-        # Generate analysis
-        max_retries = 3
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Generating sheet analysis (attempt {attempt + 1}/{max_retries})")
-                response = model.generate_content(prompt)
-                logger.info("✅ Sheet analysis generated successfully")
-                break
-            except Exception as gemini_error:
-                if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise HTTPException(
-                            status_code=429,
-                            detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
-                        )
-                raise
+        # Generate analysis with timeout and retry protection
+        response = await generate_with_timeout(model, prompt)
         
         # Cache request
         _request_cache[request_id] = {
@@ -663,7 +699,10 @@ async def submit_feedback(request: FeedbackRequest):
 
 @app.post("/regenerate", response_model=AnalyzeResponse)
 async def regenerate_response(request: RegenerateRequest):
-    """Regenerate AI response for a previous request"""
+    """Regenerate AI response for a previous request
+    
+    Session 19: All retry logic and timeout protection applied
+    """
     try:
         # Get cached request data
         cached_request = _request_cache.get(request.request_id)
@@ -682,29 +721,8 @@ async def regenerate_response(request: RegenerateRequest):
         # Use the same prompt but generate new response
         prompt = cached_request.get("prompt")
         
-        # Generate new response
-        max_retries = 3
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Generating regenerated response (attempt {attempt + 1}/{max_retries})")
-                response = model.generate_content(prompt)
-                logger.info("✅ Regenerated response generated successfully")
-                break
-            except Exception as gemini_error:
-                if "429" in str(gemini_error) or "Resource exhausted" in str(gemini_error):
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"⚠️ Rate limit hit, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise HTTPException(
-                            status_code=429,
-                            detail="Слишком много запросов. Подождите 30 секунд и попробуйте снова."
-                        )
-                raise
+        # Generate new response with timeout and retry protection
+        response = await generate_with_timeout(model, prompt)
         
         # Cache new regenerated request
         _request_cache[new_request_id] = {
@@ -762,7 +780,7 @@ async def get_prompt_info():
             "status": "success",
             "prompt_length": len(current_prompt),
             "prompt_source": "secret_manager" if current_prompt != DEFAULT_SYSTEM_INSTRUCTION else "default",
-            "cache_age_seconds": time.time() - _last_prompt_refresh,
+            "cache_age_seconds": asyncio.get_event_loop().time() - _last_prompt_refresh,
             "prompt_preview": current_prompt[:200] + "..." if len(current_prompt) > 200 else current_prompt
         }
     except Exception as e:

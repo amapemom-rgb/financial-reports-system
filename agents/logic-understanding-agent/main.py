@@ -2,12 +2,13 @@
 
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
 Session 19: Complete System Hardening with Retry Logic (P1, P2, P3)
+Session 20: Signed URL Pattern for File Upload (Bug #2 Fix)
 """
 import os
 import logging
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
-from google.cloud import secretmanager, firestore
+from google.cloud import secretmanager, firestore, storage
 
 # Session 19: Retry logic for Report Reader and Firestore
 from tenacity import (
@@ -55,10 +56,23 @@ PROJECT_ID = os.getenv("PROJECT_ID", "financial-reports-ai-2024")
 LOCATION = os.getenv("REGION", "us-central1")
 REPORT_READER_URL = os.getenv("REPORT_READER_URL", "https://report-reader-agent-38390150695.us-central1.run.app")
 
+# GCS Configuration for file uploads (Session 20: Bug #2 Fix)
+REPORTS_BUCKET = os.getenv("REPORTS_BUCKET", "financial-reports-ai-2024-reports")
+
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 
 # Firestore client for feedback storage
 db = firestore.Client(project=PROJECT_ID)
+
+# Initialize Cloud Storage client (Session 20: Bug #2 Fix)
+try:
+    storage_client = storage.Client(project=PROJECT_ID)
+    storage_bucket = storage_client.bucket(REPORTS_BUCKET)
+    logger.info(f"✅ Storage client initialized for bucket: {REPORTS_BUCKET}")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize Storage client: {e}")
+    storage_client = None
+    storage_bucket = None
 
 # Gemini model with optimized config
 generation_config = GenerationConfig(
@@ -164,6 +178,23 @@ class AnalyzeSheetRequest(BaseModel):
     sheet_name: str
     original_query: str
     conversation_context: Optional[str] = None
+
+class SignedUrlRequest(BaseModel):
+    """Request model for signed URL generation (Session 20)"""
+    filename: str
+    content_type: Optional[str] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+class SignedUrlResponse(BaseModel):
+    """Response model for signed URL (Session 20)"""
+    upload_url: str
+    file_id: str
+    file_path: str
+    expires_in_minutes: int = 15
+
+class UploadCompleteRequest(BaseModel):
+    """Request model for upload completion notification (Session 20)"""
+    file_id: str
+    file_path: str
 
 # Session 19 Priority 1: Retry configuration for Report Reader calls
 # Retries on network errors, timeouts, and HTTP errors (except 4xx client errors)
@@ -396,7 +427,8 @@ async def health():
             "multi_sheet_intelligence",
             "report_reader_retry_logic",  # Priority 1
             "firestore_retry_logic",       # Priority 2
-            "gemini_explicit_timeout"      # Priority 3
+            "gemini_explicit_timeout",     # Priority 3
+            "signed_url_upload"            # Session 20 NEW
         ]
     }
 
@@ -753,6 +785,122 @@ async def regenerate_response(request: RegenerateRequest):
     except Exception as e:
         logger.error(f"❌ Regenerate failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Regenerate failed: {str(e)}")
+
+@app.post("/upload/signed-url", response_model=SignedUrlResponse)
+async def generate_signed_url(request: SignedUrlRequest):
+    """Generate signed URL for direct client upload to GCS
+    
+    This endpoint implements the Signed URL Pattern for secure file uploads:
+    1. Client requests signed URL
+    2. Server generates temporary URL (valid 15 minutes)
+    3. Client uploads file directly to GCS using PUT
+    4. Client notifies server via /upload/complete
+    
+    Session 20: Bug #2 Fix - Enable secure file upload from browser
+    """
+    try:
+        if not storage_client or not storage_bucket:
+            raise HTTPException(
+                status_code=503,
+                detail="Storage service unavailable"
+            )
+        
+        # Validate file type
+        allowed_extensions = ['.xlsx', '.xls', '.csv']
+        file_ext = os.path.splitext(request.filename)[1].lower()
+        
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+        
+        # Generate unique file ID and path
+        file_id = f"{uuid.uuid4().hex}_{request.filename}"
+        file_path = f"reports/{file_id}"
+        
+        logger.info(f"Generating signed URL for: {file_path}")
+        
+        # Get blob reference
+        blob = storage_bucket.blob(file_path)
+        
+        # Generate signed URL (valid for 15 minutes)
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=15),
+            method="PUT",
+            content_type=request.content_type
+        )
+        
+        logger.info(f"✅ Signed URL generated for: {file_path}")
+        
+        return SignedUrlResponse(
+            upload_url=signed_url,
+            file_id=file_id,
+            file_path=file_path,
+            expires_in_minutes=15
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to generate signed URL: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate signed URL: {str(e)}"
+        )
+
+@app.post("/upload/complete")
+async def upload_complete(request: UploadCompleteRequest):
+    """Verify that file upload completed successfully
+    
+    This endpoint is called by the client after successfully uploading
+    the file to GCS using the signed URL. It verifies that the file
+    exists and is accessible.
+    
+    Session 20: Bug #2 Fix - Upload completion verification
+    """
+    try:
+        if not storage_client or not storage_bucket:
+            raise HTTPException(
+                status_code=503,
+                detail="Storage service unavailable"
+            )
+        
+        logger.info(f"Verifying upload completion for: {request.file_path}")
+        
+        # Verify file exists
+        blob = storage_bucket.blob(request.file_path)
+        
+        if not blob.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="File not found in storage. Upload may have failed."
+            )
+        
+        # Get file metadata
+        blob.reload()
+        file_size = blob.size
+        
+        logger.info(f"✅ File upload verified: {request.file_path} ({file_size} bytes)")
+        
+        return {
+            "status": "success",
+            "message": "File upload completed and verified",
+            "file_id": request.file_id,
+            "file_path": request.file_path,
+            "file_size_bytes": file_size,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Upload verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload verification failed: {str(e)}"
+        )
 
 @app.get("/test-connection")
 async def test_report_reader():

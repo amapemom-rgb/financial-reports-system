@@ -2,7 +2,7 @@
 
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
 Session 19: Complete System Hardening with Retry Logic (P1, P2, P3)
-Session 20: Signed URL Pattern for File Upload (Bug #2 Fix)
+Session 20: Signed URL Pattern for File Upload (Bug #2 Fix) - IAM-based signing
 """
 import os
 import logging
@@ -17,6 +17,8 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 from google.cloud import secretmanager, firestore, storage
+import google.auth
+from google.auth.transport import requests as auth_requests
 
 # Session 19: Retry logic for Report Reader and Firestore
 from tenacity import (
@@ -64,15 +66,39 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 # Firestore client for feedback storage
 db = firestore.Client(project=PROJECT_ID)
 
-# Initialize Cloud Storage client (Session 20: Bug #2 Fix)
+# Initialize Cloud Storage client and get default credentials (Session 20: Bug #2 Fix)
 try:
     storage_client = storage.Client(project=PROJECT_ID)
     storage_bucket = storage_client.bucket(REPORTS_BUCKET)
-    logger.info(f"✅ Storage client initialized for bucket: {REPORTS_BUCKET}")
+    
+    # Get default credentials for IAM-based signing
+    credentials, _ = google.auth.default()
+    
+    # Get service account email from metadata server (Cloud Run)
+    try:
+        auth_req = auth_requests.Request()
+        credentials.refresh(auth_req)
+        
+        # For Cloud Run, get service account from metadata
+        import requests
+        metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+        headers = {"Metadata-Flavor": "Google"}
+        response = requests.get(metadata_url, headers=headers, timeout=5)
+        service_account_email = response.text
+        
+        logger.info(f"✅ Service Account: {service_account_email}")
+        logger.info(f"✅ Storage client initialized for bucket: {REPORTS_BUCKET}")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Could not fetch service account email: {e}")
+        service_account_email = None
+        
 except Exception as e:
     logger.error(f"❌ Failed to initialize Storage client: {e}")
     storage_client = None
     storage_bucket = None
+    credentials = None
+    service_account_email = None
 
 # Gemini model with optimized config
 generation_config = GenerationConfig(
@@ -796,13 +822,20 @@ async def generate_signed_url(request: SignedUrlRequest):
     3. Client uploads file directly to GCS using PUT
     4. Client notifies server via /upload/complete
     
-    Session 20: Bug #2 Fix - Enable secure file upload from browser
+    Session 20: Bug #2 Fix - IAM-based signing for Cloud Run compatibility
+    Uses IAM signBlob API instead of service account private key
     """
     try:
         if not storage_client or not storage_bucket:
             raise HTTPException(
                 status_code=503,
                 detail="Storage service unavailable"
+            )
+        
+        if not service_account_email:
+            raise HTTPException(
+                status_code=503,
+                detail="Service account configuration unavailable"
             )
         
         # Validate file type
@@ -824,12 +857,14 @@ async def generate_signed_url(request: SignedUrlRequest):
         # Get blob reference
         blob = storage_bucket.blob(file_path)
         
-        # Generate signed URL (valid for 15 minutes)
+        # Generate signed URL using IAM-based signing (works on Cloud Run)
+        # This uses the IAM signBlob API instead of requiring private key
         signed_url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=15),
             method="PUT",
-            content_type=request.content_type
+            content_type=request.content_type,
+            service_account_email=service_account_email  # Use IAM-based signing
         )
         
         logger.info(f"✅ Signed URL generated for: {file_path}")

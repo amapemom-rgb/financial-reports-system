@@ -30,7 +30,7 @@
             25% { transform: translateX(-10px); }
             75% { transform: translateX(10px); }
         }
-        /* NEW: Feedback buttons styles */
+        /* Feedback buttons styles */
         .feedback-buttons {
             display: flex;
             gap: 8px;
@@ -73,7 +73,7 @@
             background: rgba(59, 130, 246, 0.3);
         }
 
-        /* NEW: Regenerated message styles (Bug #1 Fix) */
+        /* Regenerated message styles */
         .regenerated-message {
             opacity: 0.5;
             position: relative;
@@ -102,7 +102,7 @@
             <h1 class="text-3xl md:text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
                 Financial Reports Analysis System
             </h1>
-            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖 <span class="text-xs text-green-400">(v9-regenerate-fix)</span></p>
+            <p class="text-gray-400">Анализ финансовых отчётов с помощью AI 🤖 <span class="text-xs text-green-400">(v10-upload-fix)</span></p>
         </div>
 
         <!-- Error Banner (hidden by default) -->
@@ -244,6 +244,7 @@
                 <li>Загрузи CSV или Excel файл 📊</li>
                 <li>Задавай вопросы в чате 💬</li>
                 <li><span class="text-green-400">NEW:</span> Используй кнопки 👍👎🔄 для фидбэка</li>
+                <li><span class="text-orange-400">Session 20:</span> Secure file upload via Signed URLs</li>
             </ol>
         </div>
     </div>
@@ -255,7 +256,7 @@
         let uploadedFile = null;
         let conversationId = null;
         let logsExpanded = true;
-        let currentRequestId = null; // NEW: track request_id for feedback
+        let currentRequestId = null;
 
         // ==================== Logging ====================
         function addLog(message, type = 'info') {
@@ -371,9 +372,6 @@
 
         // ==================== Services Check ====================
         document.getElementById('checkServicesBtn').addEventListener('click', async () => {
-            // const token = getToken();
-            // if (!token) return; // DISABLED for direct Logic Agent testing
-
             addLog('Проверка статуса сервисов...', 'info');
             const btn = document.getElementById('checkServicesBtn');
             btn.disabled = true;
@@ -392,9 +390,7 @@
 
             for (const [name, url] of Object.entries(serviceUrls)) {
                 try {
-                    const response = await fetch(`${url}/health`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
+                    const response = await fetch(`${url}/health`);
                     
                     const statusItem = document.createElement('div');
                     statusItem.className = 'flex items-center justify-between bg-gray-900 p-2 rounded text-sm';
@@ -421,50 +417,139 @@
             addLog('Проверка завершена', 'success');
         });
 
-        // ==================== File Upload ====================
+        // ==================== File Upload (Session 20: Signed URL Pattern) ====================
         document.getElementById('fileInput').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
-            // const token = getToken();
-            // if (!token) return; // DISABLED for direct Logic Agent testing
+            addLog(`📤 Начинаю загрузку файла: ${file.name}`, 'info');
 
-            addLog(`Загрузка файла: ${file.name}`, 'info');
-
-            const formData = new FormData();
-            formData.append('file', file);
+            const statusDiv = document.getElementById('uploadStatus');
+            statusDiv.classList.remove('hidden');
 
             try {
-                const response = await fetch(`${API_BASE}/upload`, {
+                // ===== Step 1: Request Signed URL from Backend =====
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="text-blue-400 text-sm mb-1">⏳ Шаг 1/3: Запрос разрешения на загрузку...</div>
+                        <div class="text-xs text-gray-400">${file.name}</div>
+                    </div>
+                `;
+                
+                addLog(`Step 1: Requesting signed URL for ${file.name}`, 'info');
+
+                const signedUrlResponse = await fetch(`${LOGIC_AGENT_URL}/upload/signed-url`, {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` },
-                    body: formData
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filename: file.name,
+                        content_type: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    })
                 });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    uploadedFile = data;
-                    addLog(`✅ Файл загружен: ${data.file_id}`, 'success');
-                    
-                    const statusDiv = document.getElementById('uploadStatus');
-                    statusDiv.innerHTML = `
-                        <div class="bg-gray-900 p-3 rounded">
-                            <div class="text-green-400 text-sm mb-1">✅ ${file.name}</div>
-                            <div class="text-xs text-gray-400">ID: ${data.file_id}</div>
-                        </div>
-                    `;
-                    statusDiv.classList.remove('hidden');
-                    
-                    // Add welcome message to chat
-                    addChatMessage('ai', `Файл "${file.name}" загружен! Теперь можешь задавать вопросы по этому отчёту.`);
-                } else {
-                    const error = await response.text();
-                    addLog(`❌ Ошибка загрузки: HTTP ${response.status}`, 'error');
-                    addLog(`Детали: ${error}`, 'error');
-                    diagnoseError(error, 'File Upload');
+                if (!signedUrlResponse.ok) {
+                    const error = await signedUrlResponse.text();
+                    throw new Error(`Failed to get signed URL: ${error}`);
                 }
+
+                const signedData = await signedUrlResponse.json();
+                addLog(`✅ Signed URL получен (expires in ${signedData.expires_in_minutes} min)`, 'success');
+                addLog(`File ID: ${signedData.file_id}`, 'info');
+
+                // ===== Step 2: Upload File Directly to GCS =====
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="text-blue-400 text-sm mb-1">⏳ Шаг 2/3: Загрузка файла в Cloud Storage...</div>
+                        <div class="text-xs text-gray-400">${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)</div>
+                        <div class="mt-2 bg-gray-800 rounded-full h-2">
+                            <div class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 33%"></div>
+                        </div>
+                    </div>
+                `;
+
+                addLog(`Step 2: Uploading file to GCS via signed URL`, 'info');
+
+                const uploadResponse = await fetch(signedData.upload_url, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    },
+                    body: file
+                });
+
+                if (!uploadResponse.ok) {
+                    throw new Error(`GCS upload failed: HTTP ${uploadResponse.status}`);
+                }
+
+                addLog(`✅ File uploaded to GCS successfully`, 'success');
+
+                // ===== Step 3: Notify Backend =====
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="text-blue-400 text-sm mb-1">⏳ Шаг 3/3: Проверка загрузки...</div>
+                        <div class="text-xs text-gray-400">${file.name}</div>
+                        <div class="mt-2 bg-gray-800 rounded-full h-2">
+                            <div class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 66%"></div>
+                        </div>
+                    </div>
+                `;
+
+                addLog(`Step 3: Notifying backend via /upload/complete`, 'info');
+
+                const completeResponse = await fetch(`${LOGIC_AGENT_URL}/upload/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: signedData.file_id,
+                        file_path: signedData.file_path
+                    })
+                });
+
+                if (!completeResponse.ok) {
+                    const error = await completeResponse.text();
+                    throw new Error(`Upload verification failed: ${error}`);
+                }
+
+                const completeData = await completeResponse.json();
+                addLog(`✅ Upload verified: ${(completeData.file_size_bytes / 1024 / 1024).toFixed(2)} MB`, 'success');
+
+                // ===== Success! =====
+                uploadedFile = {
+                    file_id: signedData.file_id,
+                    file_path: signedData.file_path,
+                    filename: file.name,
+                    size_bytes: completeData.file_size_bytes
+                };
+
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-900 p-3 rounded border-2 border-green-500">
+                        <div class="text-green-400 text-sm mb-1 font-semibold">✅ ${file.name} загружен!</div>
+                        <div class="text-xs text-gray-400 space-y-1">
+                            <div>ID: ${signedData.file_id}</div>
+                            <div>Размер: ${(completeData.file_size_bytes / 1024 / 1024).toFixed(2)} MB</div>
+                            <div>Путь: ${signedData.file_path}</div>
+                        </div>
+                        <div class="mt-2 bg-gray-800 rounded-full h-2">
+                            <div class="bg-green-500 h-2 rounded-full" style="width: 100%"></div>
+                        </div>
+                    </div>
+                `;
+
+                addLog(`🎉 File upload completed successfully!`, 'success');
+                
+                // Add welcome message to chat
+                addChatMessage('ai', `Файл "${file.name}" успешно загружен! Теперь можешь задавать вопросы по этому отчёту.`);
+
             } catch (error) {
-                addLog(`❌ Ошибка: ${error.message}`, 'error');
+                addLog(`❌ Upload failed: ${error.message}`, 'error');
+                
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-900 p-3 rounded border-2 border-red-500">
+                        <div class="text-red-400 text-sm mb-1 font-semibold">❌ Ошибка загрузки</div>
+                        <div class="text-xs text-gray-300">${error.message}</div>
+                    </div>
+                `;
+
                 diagnoseError(error.message, 'File Upload');
             }
         });
@@ -503,11 +588,8 @@
         }
 
 
-        // ==================== NEW: Feedback Functions ====================
+        // ==================== Feedback Functions ====================
         async function sendFeedback(requestId, feedbackType, button) {
-            // const token = getToken();
-            // if (!token) return; // DISABLED for direct Logic Agent testing
-
             button.disabled = true;
             const originalText = button.textContent;
             button.textContent = '⏳';
@@ -540,27 +622,21 @@
         }
 
         async function regenerateResponse(requestId, button) {
-            // const token = getToken();
-            // if (!token) return; // DISABLED for direct Logic Agent testing
-
             button.disabled = true;
             button.textContent = '⏳ Regenerating...';
 
-            // NEW: Find and mark old message as regenerated (Bug #1 Fix)
+            // Find and mark old message as regenerated
             const oldMessage = document.querySelector(`[data-request-id="${requestId}"]`);
             if (oldMessage) {
                 const messageContent = oldMessage.querySelector('.max-w-\\[80\\%\\]');
                 if (messageContent) {
-                    // Add regenerated styling
                     messageContent.classList.add('regenerated-message');
                     
-                    // Add "Regenerated" label
                     const label = document.createElement('div');
                     label.className = 'regenerated-label';
                     label.textContent = '🔄 Regenerated';
                     messageContent.appendChild(label);
                     
-                    // Disable feedback buttons on old message
                     const feedbackButtons = messageContent.querySelectorAll('.feedback-btn');
                     feedbackButtons.forEach(btn => {
                         btn.disabled = true;
@@ -580,7 +656,6 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    // Add new regenerated message
                     addChatMessage('ai', data.insights, data.request_id);
                     addLog('✅ Response regenerated', 'success');
                 } else {
@@ -601,24 +676,30 @@
             
             if (!message) return;
             
-            // const token = getToken();
-            // if (!token) return; // DISABLED for direct Logic Agent testing
-            
-            // Add user message
             addChatMessage('user', message);
             addLog(`Отправлен вопрос: ${message}`, 'info');
             input.value = '';
             
-            // Show loading
             const sendBtn = document.getElementById('sendBtn');
             sendBtn.disabled = true;
             sendBtn.textContent = '⏳';
             
             try {
+                // Include uploaded file context if available
+                const requestBody = {
+                    query: message
+                };
+
+                if (uploadedFile) {
+                    requestBody.context = {
+                        file_path: uploadedFile.file_path
+                    };
+                }
+
                 const response = await fetch(`${LOGIC_AGENT_URL}/analyze`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: message })
+                    body: JSON.stringify(requestBody)
                 });
 
                 if (response.ok) {
@@ -656,10 +737,10 @@
         }
 
         // ==================== Initialize ====================
-        addLog('Приложение запущено (v9-regenerate-fix)', 'success');
-        addLog('✨ NEW: Bug #1 Fixed - Regenerated messages now marked visually', 'info');
-        addLog('✨ Новое: кнопки feedback (👍👎🔄)', 'info');
-        addLog('⚠️ Для работы требуется токен аутентификации', 'warning');
+        addLog('Приложение запущено (v10-upload-fix)', 'success');
+        addLog('🎉 Session 20: Signed URL Pattern implemented!', 'success');
+        addLog('✨ NEW: Secure file upload directly to GCS', 'info');
+        addLog('✨ Feedback buttons available (👍👎🔄)', 'info');
     </script>
 </body>
 </html>

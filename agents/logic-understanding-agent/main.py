@@ -3,6 +3,7 @@
 Enhanced with Multi-Sheet Intelligence for handling Excel files with 30+ sheets.
 Session 19: Complete System Hardening with Retry Logic (P1, P2, P3)
 Session 20: Signed URL Pattern for File Upload (Bug #2 Fix) - IAM-based signing with iam.Signer
+Session 21: Fixed signed URL generation to use signed_url_helper (IAM signBlob API)
 """
 import os
 import logging
@@ -18,7 +19,6 @@ from vertexai.generative_models import GenerativeModel, GenerationConfig
 import httpx
 from google.cloud import secretmanager, firestore, storage
 import google.auth
-from google.auth import iam
 from google.auth.transport import requests as google_requests
 
 # Session 19: Retry logic for Report Reader and Firestore
@@ -38,6 +38,9 @@ from prompts import (
     build_sheet_analysis_prompt,
     extract_sheet_name_from_user_response
 )
+
+# Session 21: Import signed URL helper for IAM signBlob API
+from signed_url_helper import generate_signed_url_v4
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -452,7 +455,7 @@ async def health():
             "report_reader_retry_logic",  # Priority 1
             "firestore_retry_logic",       # Priority 2
             "gemini_explicit_timeout",     # Priority 3
-            "signed_url_upload_iam_signer" # Session 20 FIXED
+            "signed_url_upload_v2_signblob" # Session 21 FIXED with signed_url_helper
         ]
     }
 
@@ -750,4 +753,224 @@ async def submit_feedback(request: FeedbackRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to store feedback: {str(e)}\")\n        raise HTTPException(status_code=500, detail=f\"Failed to store feedback: {str(e)}\")\n\n@app.post(\"/regenerate\", response_model=AnalyzeResponse)\nasync def regenerate_response(request: RegenerateRequest):\n    \"\"\"Regenerate AI response for a previous request\n    \n    Session 19: All retry logic and timeout protection applied\n    \"\"\"\n    try:\n        # Get cached request data\n        cached_request = _request_cache.get(request.request_id)\n        \n        if not cached_request:\n            raise HTTPException(\n                status_code=404,\n                detail=\"Request ID not found. Can only regenerate recent requests.\"\n            )\n        \n        # Generate new request_id for regenerated response\n        new_request_id = str(uuid.uuid4())\n        \n        logger.info(f\"Regenerating response for request: {request.request_id}\")\n        \n        # Use the same prompt but generate new response\n        prompt = cached_request.get(\"prompt\")\n        \n        # Generate new response with timeout and retry protection\n        response = await generate_with_timeout(model, prompt)\n        \n        # Cache new regenerated request\n        _request_cache[new_request_id] = {\n            \"query\": cached_request.get(\"query\"),\n            \"context\": cached_request.get(\"context\"),\n            \"options\": cached_request.get(\"options\"),\n            \"prompt\": prompt,\n            \"response\": response.text,\n            \"timestamp\": datetime.utcnow().isoformat(),\n            \"regenerated_from\": request.request_id\n        }\n        \n        return AnalyzeResponse(\n            status=\"completed\",\n            insights=response.text,\n            request_id=new_request_id,\n            agent_mode=\"marketplace_expert\",\n            metadata={\n                \"model\": \"gemini-2.0-flash-exp\",\n                \"regenerated\": True,\n                \"original_request_id\": request.request_id,\n                \"prompt_source\": \"secret_manager\"\n            }\n        )\n        \n    except HTTPException:\n        raise\n    except Exception as e:\n        logger.error(f\"❌ Regenerate failed: {str(e)}\")\n        raise HTTPException(status_code=500, detail=f\"Regenerate failed: {str(e)}\")\n\n@app.post(\"/upload/signed-url\", response_model=SignedUrlResponse)\nasync def generate_signed_url_endpoint(request: SignedUrlRequest):\n    \"\"\"Generate signed URL for direct client upload to GCS\n    \n    This endpoint implements the Signed URL Pattern for secure file uploads:\n    1. Client requests signed URL\n    2. Server generates temporary URL (valid 15 minutes)\n    3. Client uploads file directly to GCS using PUT\n    4. Client notifies server via /upload/complete\n    \n    Session 20: Bug #2 Fix - IAM-based signing using iam.Signer\n    Uses IAM signBlob API instead of service account private key\n    \"\"\"\n    try:\n        if not storage_client or not storage_bucket:\n            raise HTTPException(\n                status_code=503,\n                detail=\"Storage service unavailable\"\n            )\n        \n        if not service_account_email or not credentials:\n            raise HTTPException(\n                status_code=503,\n                detail=\"Service account configuration unavailable\"\n            )\n        \n        # Validate file type\n        allowed_extensions = ['.xlsx', '.xls', '.csv']\n        file_ext = os.path.splitext(request.filename)[1].lower()\n        \n        if file_ext not in allowed_extensions:\n            raise HTTPException(\n                status_code=400,\n                detail=f\"Invalid file type. Allowed: {', '.join(allowed_extensions)}\"\n            )\n        \n        # Generate unique file ID and path\n        file_id = f\"{uuid.uuid4().hex}_{request.filename}\"\n        file_path = f\"reports/{file_id}\"\n        \n        logger.info(f\"Generating signed URL for: {file_path}\")\n        \n        # Get blob reference\n        blob = storage_bucket.blob(file_path)\n        \n        # 🎯 KEY FIX: Create IAM-based signer object\n        # This uses the IAM signBlob API instead of requiring private key\n        signing_credentials = iam.Signer(\n            request=google_requests.Request(),\n            credentials=credentials,  # default credentials from google.auth.default()\n            service_account_email=service_account_email\n        )\n        \n        # Generate signed URL with IAM signer\n        signed_url = blob.generate_signed_url(\n            version=\"v4\",\n            expiration=timedelta(minutes=15),\n            method=\"PUT\",\n            content_type=request.content_type,\n            credentials=signing_credentials  # 🎯 Pass IAM Signer here!\n        )\n        \n        logger.info(f\"✅ Signed URL generated for: {file_path}\")\n        \n        return SignedUrlResponse(\n            upload_url=signed_url,\n            file_id=file_id,\n            file_path=file_path,\n            expires_in_minutes=15\n        )\n        \n    except HTTPException:\n        raise\n    except Exception as e:\n        logger.error(f\"❌ Failed to generate signed URL: {str(e)}\")\n        raise HTTPException(\n            status_code=500,\n            detail=f\"Failed to generate signed URL: {str(e)}\"\n        )\n\n@app.post(\"/upload/complete\")\nasync def upload_complete(request: UploadCompleteRequest):\n    \"\"\"Verify that file upload completed successfully\n    \n    This endpoint is called by the client after successfully uploading\n    the file to GCS using the signed URL. It verifies that the file\n    exists and is accessible.\n    \n    Session 20: Bug #2 Fix - Upload completion verification\n    \"\"\"\n    try:\n        if not storage_client or not storage_bucket:\n            raise HTTPException(\n                status_code=503,\n                detail=\"Storage service unavailable\"\n            )\n        \n        logger.info(f\"Verifying upload completion for: {request.file_path}\")\n        \n        # Verify file exists\n        blob = storage_bucket.blob(request.file_path)\n        \n        if not blob.exists():\n            raise HTTPException(\n                status_code=404,\n                detail=\"File not found in storage. Upload may have failed.\"\n            )\n        \n        # Get file metadata\n        blob.reload()\n        file_size = blob.size\n        \n        logger.info(f\"✅ File upload verified: {request.file_path} ({file_size} bytes)\")\n        \n        return {\n            \"status\": \"success\",\n            \"message\": \"File upload completed and verified\",\n            \"file_id\": request.file_id,\n            \"file_path\": request.file_path,\n            \"file_size_bytes\": file_size,\n            \"timestamp\": datetime.utcnow().isoformat()\n        }\n        \n    except HTTPException:\n        raise\n    except Exception as e:\n        logger.error(f\"❌ Upload verification failed: {str(e)}\")\n        raise HTTPException(\n            status_code=500,\n            detail=f\"Upload verification failed: {str(e)}\"\n        )\n\n@app.get(\"/test-connection\")\nasync def test_report_reader():\n    \"\"\"Test connection to report-reader-agent\"\"\"\n    try:\n        async with httpx.AsyncClient(timeout=10.0) as client:\n            response = await client.get(f\"{REPORT_READER_URL}/health\")\n            return {\n                \"report_reader_status\": response.status_code,\n                \"report_reader_url\": REPORT_READER_URL,\n                \"response\": response.json() if response.status_code == 200 else response.text\n            }\n    except Exception as e:\n        return {\n            \"error\": str(e),\n            \"report_reader_url\": REPORT_READER_URL\n        }\n\n@app.get(\"/prompt/info\")\nasync def get_prompt_info():\n    \"\"\"Get information about current system prompt (for debugging)\"\"\"\n    try:\n        current_prompt = get_cached_system_prompt()\n        return {\n            \"status\": \"success\",\n            \"prompt_length\": len(current_prompt),\n            \"prompt_source\": \"secret_manager\" if current_prompt != DEFAULT_SYSTEM_INSTRUCTION else \"default\",\n            \"cache_age_seconds\": asyncio.get_event_loop().time() - _last_prompt_refresh,\n            \"prompt_preview\": current_prompt[:200] + \"...\" if len(current_prompt) > 200 else current_prompt\n        }\n    except Exception as e:\n        return {\n            \"status\": \"error\",\n            \"error\": str(e)\n        }\n\nif __name__ == \"__main__\":\n    import uvicorn\n    uvicorn.run(app, host=\"0.0.0.0\", port=8080)
+        logger.error(f"❌ Failed to store feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to store feedback: {str(e)}")
+
+@app.post("/regenerate", response_model=AnalyzeResponse)
+async def regenerate_response(request: RegenerateRequest):
+    """Regenerate AI response for a previous request
+    
+    Session 19: All retry logic and timeout protection applied
+    """
+    try:
+        # Get cached request data
+        cached_request = _request_cache.get(request.request_id)
+        
+        if not cached_request:
+            raise HTTPException(
+                status_code=404,
+                detail="Request ID not found. Can only regenerate recent requests."
+            )
+        
+        # Generate new request_id for regenerated response
+        new_request_id = str(uuid.uuid4())
+        
+        logger.info(f"Regenerating response for request: {request.request_id}")
+        
+        # Use the same prompt but generate new response
+        prompt = cached_request.get("prompt")
+        
+        # Generate new response with timeout and retry protection
+        response = await generate_with_timeout(model, prompt)
+        
+        # Cache new regenerated request
+        _request_cache[new_request_id] = {
+            "query": cached_request.get("query"),
+            "context": cached_request.get("context"),
+            "options": cached_request.get("options"),
+            "prompt": prompt,
+            "response": response.text,
+            "timestamp": datetime.utcnow().isoformat(),
+            "regenerated_from": request.request_id
+        }
+        
+        return AnalyzeResponse(
+            status="completed",
+            insights=response.text,
+            request_id=new_request_id,
+            agent_mode="marketplace_expert",
+            metadata={
+                "model": "gemini-2.0-flash-exp",
+                "regenerated": True,
+                "original_request_id": request.request_id,
+                "prompt_source": "secret_manager"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Regenerate failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Regenerate failed: {str(e)}")
+
+@app.post("/upload/signed-url", response_model=SignedUrlResponse)
+async def generate_signed_url_endpoint(request: SignedUrlRequest):
+    """Generate signed URL for direct client upload to GCS
+    
+    This endpoint implements the Signed URL Pattern for secure file uploads:
+    1. Client requests signed URL
+    2. Server generates temporary URL (valid 15 minutes)
+    3. Client uploads file directly to GCS using PUT
+    4. Client notifies server via /upload/complete
+    
+    Session 21: Updated to use signed_url_helper (IAM signBlob API)
+    This is more reliable on Cloud Run than iam.Signer
+    """
+    try:
+        if not storage_client or not storage_bucket:
+            raise HTTPException(
+                status_code=503,
+                detail="Storage service unavailable"
+            )
+        
+        if not service_account_email:
+            raise HTTPException(
+                status_code=503,
+                detail="Service account configuration unavailable"
+            )
+        
+        # Validate file type
+        allowed_extensions = ['.xlsx', '.xls', '.csv']
+        file_ext = os.path.splitext(request.filename)[1].lower()
+        
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+        
+        # Generate unique file ID and path
+        file_id = f"{uuid.uuid4().hex}_{request.filename}"
+        file_path = f"reports/{file_id}"
+        
+        logger.info(f"Generating signed URL for: {file_path}")
+        
+        # 🎯 Session 21 FIX: Use signed_url_helper with IAM signBlob API
+        # This is more reliable on Cloud Run than iam.Signer
+        signed_url = generate_signed_url_v4(
+            bucket_name=REPORTS_BUCKET,
+            blob_name=file_path,
+            service_account_email=service_account_email,
+            expiration_minutes=15,
+            http_method="PUT",
+            content_type=request.content_type
+        )
+        
+        logger.info(f"✅ Signed URL generated successfully for: {file_path}")
+        
+        return SignedUrlResponse(
+            upload_url=signed_url,
+            file_id=file_id,
+            file_path=file_path,
+            expires_in_minutes=15
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to generate signed URL: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate signed URL: {str(e)}"
+        )
+
+@app.post("/upload/complete")
+async def upload_complete(request: UploadCompleteRequest):
+    """Verify that file upload completed successfully
+    
+    This endpoint is called by the client after successfully uploading
+    the file to GCS using the signed URL. It verifies that the file
+    exists and is accessible.
+    
+    Session 20: Bug #2 Fix - Upload completion verification
+    """
+    try:
+        if not storage_client or not storage_bucket:
+            raise HTTPException(
+                status_code=503,
+                detail="Storage service unavailable"
+            )
+        
+        logger.info(f"Verifying upload completion for: {request.file_path}")
+        
+        # Verify file exists
+        blob = storage_bucket.blob(request.file_path)
+        
+        if not blob.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="File not found in storage. Upload may have failed."
+            )
+        
+        # Get file metadata
+        blob.reload()
+        file_size = blob.size
+        
+        logger.info(f"✅ File upload verified: {request.file_path} ({file_size} bytes)")
+        
+        return {
+            "status": "success",
+            "message": "File upload completed and verified",
+            "file_id": request.file_id,
+            "file_path": request.file_path,
+            "file_size_bytes": file_size,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Upload verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload verification failed: {str(e)}"
+        )
+
+@app.get("/test-connection")
+async def test_report_reader():
+    """Test connection to report-reader-agent"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{REPORT_READER_URL}/health")
+            return {
+                "report_reader_status": response.status_code,
+                "report_reader_url": REPORT_READER_URL,
+                "response": response.json() if response.status_code == 200 else response.text
+            }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "report_reader_url": REPORT_READER_URL
+        }
+
+@app.get("/prompt/info")
+async def get_prompt_info():
+    """Get information about current system prompt (for debugging)"""
+    try:
+        current_prompt = get_cached_system_prompt()
+        return {
+            "status": "success",
+            "prompt_length": len(current_prompt),
+            "prompt_source": "secret_manager" if current_prompt != DEFAULT_SYSTEM_INSTRUCTION else "default",
+            "cache_age_seconds": asyncio.get_event_loop().time() - _last_prompt_refresh,
+            "prompt_preview": current_prompt[:200] + "..." if len(current_prompt) > 200 else current_prompt
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)

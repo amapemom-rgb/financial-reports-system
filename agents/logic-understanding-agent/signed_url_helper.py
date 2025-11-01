@@ -5,11 +5,12 @@ This module provides IAM-based signed URL generation for Cloud Run environments
 where service account private keys are not available.
 
 Session 20: Bug #2 Fix - Manual signed URL generation using IAM API
+Session 22: Fix Content-Type mismatch causing 403 errors
 """
 import base64
 import datetime
 import hashlib
-from typing import Dict
+from typing import Dict, Optional
 from urllib.parse import quote
 import requests
 import google.auth
@@ -22,7 +23,7 @@ def generate_signed_url_v4(
     service_account_email: str,
     expiration_minutes: int = 15,
     http_method: str = "PUT",
-    content_type: str = "application/octet-stream"
+    content_type: Optional[str] = None
 ) -> str:
     """Generate a v4 signed URL using IAM signBlob API
     
@@ -31,13 +32,17 @@ def generate_signed_url_v4(
     2. Signing it using IAM signBlob API
     3. Constructing the final signed URL
     
+    Session 22 Fix: Made content_type optional and don't include it in signed headers
+    by default to avoid Content-Type mismatch issues. This allows the client to use
+    any Content-Type without signature validation failures.
+    
     Args:
         bucket_name: GCS bucket name
         blob_name: Object path in bucket
         service_account_email: Service account email for signing
         expiration_minutes: URL expiration time in minutes
         http_method: HTTP method (GET, PUT, POST, etc.)
-        content_type: Content-Type header value
+        content_type: Optional Content-Type header (not included in signature)
         
     Returns:
         Signed URL string
@@ -63,14 +68,10 @@ def generate_signed_url_v4(
     credential_scope = f"{datestamp}/auto/storage/goog4_request"
     credential = f"{service_account_email}/{credential_scope}"
     
-    # Canonical headers
-    canonical_headers = f"host:storage.googleapis.com\n"
-    if content_type:
-        canonical_headers += f"content-type:{content_type}\n"
-    
+    # Canonical headers - only include host (required)
+    # Don't include content-type to allow client flexibility
+    canonical_headers = "host:storage.googleapis.com\n"
     signed_headers = "host"
-    if content_type:
-        signed_headers += ";content-type"
     
     # Query parameters
     query_params = {

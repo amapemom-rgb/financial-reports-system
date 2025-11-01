@@ -26,8 +26,12 @@ SERVICE_NAME="web-ui"
 IMAGE_TAG="v10-upload-fix"
 IMAGE_URL="gcr.io/${PROJECT_ID}/${SERVICE_NAME}:${IMAGE_TAG}"
 
+# Find repository root (script is in scripts/ directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
+
 # Change to web-ui directory
-cd "$(dirname "$0")/web-ui" || exit 1
+cd "${REPO_ROOT}/web-ui" || exit 1
 
 echo -e "${YELLOW}📍 Current directory: $(pwd)${NC}"
 echo ""
